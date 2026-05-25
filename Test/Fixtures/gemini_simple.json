@@ -1,0 +1,12 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [{ "text": "Tell me a short joke." }]
+    }
+  ],
+  "generationConfig": {
+    "temperature": 0.9,
+    "maxOutputTokens": 512
+  }
+}

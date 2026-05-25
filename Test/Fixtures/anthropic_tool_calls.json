@@ -1,0 +1,42 @@
+{
+  "model": "claude-opus-4-7",
+  "max_tokens": 1024,
+  "stream": false,
+  "messages": [
+    { "role": "user", "content": "Search for recent news about AI." },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01A09q90qw90lq917835lq9",
+          "name": "web_search",
+          "input": { "query": "recent AI news 2026" }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01A09q90qw90lq917835lq9",
+          "content": "Here are recent AI headlines..."
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "web_search",
+      "description": "Search the web for information",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search query" }
+        },
+        "required": ["query"]
+      }
+    }
+  ]
+}

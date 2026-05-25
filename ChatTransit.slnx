@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/Src/">
+    <Project Path="Src/ChatTransit.csproj" />
+  </Folder>
+  <Folder Name="/Test/">
+    <Project Path="Test/ChatTransit.Tests.csproj" />
+  </Folder>
+</Solution>

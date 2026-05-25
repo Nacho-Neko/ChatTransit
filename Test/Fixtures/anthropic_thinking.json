@@ -1,0 +1,9 @@
+{
+  "model": "claude-opus-4-7",
+  "max_tokens": 16384,
+  "stream": false,
+  "thinking": { "type": "enabled", "budget_tokens": 10000 },
+  "messages": [
+    { "role": "user", "content": "Solve this step by step: 17 * 23 = ?" }
+  ]
+}

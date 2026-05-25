@@ -1,0 +1,48 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [{ "text": "What is the weather in Tokyo?" }]
+    },
+    {
+      "role": "model",
+      "parts": [
+        {
+          "functionCall": {
+            "name": "get_weather",
+            "args": { "location": "Tokyo", "unit": "celsius" }
+          }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "parts": [
+        {
+          "functionResponse": {
+            "name": "get_weather",
+            "response": { "temperature": 18, "condition": "cloudy" }
+          }
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Get weather for a location",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "location": { "type": "string" },
+              "unit": { "type": "string" }
+            },
+            "required": ["location"]
+          }
+        }
+      ]
+    }
+  ]
+}

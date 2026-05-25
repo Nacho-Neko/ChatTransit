@@ -1,0 +1,6 @@
+{
+  "model": "gpt-4o",
+  "stream": false,
+  "instructions": "You are a helpful assistant.",
+  "input": "What is the capital of Germany?"
+}

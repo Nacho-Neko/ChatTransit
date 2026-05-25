@@ -1,0 +1,32 @@
+{
+  "model": "gpt-4o",
+  "stream": false,
+  "input": [
+    { "type": "message", "role": "user", "content": "Get the latest stock price for AAPL." },
+    {
+      "type": "function_call",
+      "call_id": "call_xyz789",
+      "name": "get_stock_price",
+      "arguments": "{\"ticker\":\"AAPL\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_xyz789",
+      "output": "{\"price\":182.5,\"currency\":\"USD\"}"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_stock_price",
+      "description": "Get the current stock price",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ticker": { "type": "string" }
+        },
+        "required": ["ticker"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Gateway.Shared.ChatTransit</RootNamespace>
+    <NoWarn>$(NoWarn);OPENAI001;OPENAI002;MEAI001</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Gateway.Shared\Gateway.Shared.csproj" />
+    <!-- Raw SDK projects only — Channel.* wraps Provider.Shared which would create a cycle in Phase 3 -->
+    <ProjectReference Include="..\..\Channels\SDK\Anthropic\src\Anthropic\Anthropic.csproj" />
+    <ProjectReference Include="..\..\Channels\SDK\GenAi\Google.GenAI\Google.GenAI.csproj" />
+    <ProjectReference Include="..\..\Channels\SDK\OpenAi\OpenAI\src\OpenAI.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MessagePack" Version="3.1.6" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
+  </ItemGroup>
+
+</Project>
