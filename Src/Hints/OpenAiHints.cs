@@ -18,13 +18,6 @@ public static class OpenAiHints
     public const string ResponseFormat = "openai.response_format";
 
     /// <summary>
-    /// <c>stream_options.include_usage</c> flag — when true and the request is
-    /// streaming, OpenAI emits a final usage chunk.
-    /// Value: <c>bool</c>.
-    /// </summary>
-    public const string StreamIncludeUsage = "openai.stream_include_usage";
-
-    /// <summary>
     /// <c>parallel_tool_calls</c> flag. Value: <c>bool</c>.
     /// </summary>
     public const string ParallelToolCalls = "openai.parallel_tool_calls";

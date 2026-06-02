@@ -95,15 +95,4 @@ public class OpenAiChatDecoderTests
 
         result.Hints.Should().ContainKey(OpenAiHints.ResponseFormat);
     }
-
-    [Fact]
-    public void Decode_StreamOptions_SetsIncludeUsageHint()
-    {
-        var json = """{"model":"gpt-4o","stream":true,"messages":[{"role":"user","content":"hi"}],"stream_options":{"include_usage":true}}""";
-        var bytes = System.Text.Encoding.UTF8.GetBytes(json);
-        var result = _decoder.Decode(bytes);
-
-        result.Hints.Should().ContainKey(OpenAiHints.StreamIncludeUsage);
-        result.Hints[OpenAiHints.StreamIncludeUsage].Should().Be(true);
-    }
 }

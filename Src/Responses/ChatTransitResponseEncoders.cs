@@ -7,8 +7,8 @@ namespace Gateway.Shared.ChatTransit.Responses;
 /// <summary>
 /// DI-injectable wrapper for <see cref="OpenAiChatSseEncoder"/> that implements
 /// <see cref="IResponseSseEncoder"/> and <see cref="IResponseCollector"/>.
-/// Reads <see cref="OpenAiHints.StreamIncludeUsage"/> from the request context to
-/// decide whether to emit a final usage chunk before <c>[DONE]</c>.
+/// The final usage chunk is always emitted (the gateway relies on it for
+/// metering), so <c>stream_options.include_usage</c> is no longer honoured here.
 /// </summary>
 public sealed class OpenAiChatResponseEncoder : IResponseSseEncoder, IResponseCollector
 {
@@ -17,12 +17,7 @@ public sealed class OpenAiChatResponseEncoder : IResponseSseEncoder, IResponseCo
     public IAsyncEnumerable<string> EncodeAsync(
         IAsyncEnumerable<StreamingChunkDto> chunks, string model,
         TransitRequest? requestContext = null, CancellationToken ct = default)
-    {
-        var includeUsage = requestContext?.Hints != null
-            && requestContext.Hints.TryGetValue(OpenAiHints.StreamIncludeUsage, out var v)
-            && v is true;
-        return OpenAiChatSseEncoder.StreamAsync(chunks, model, includeUsage, ct);
-    }
+        => OpenAiChatSseEncoder.StreamAsync(chunks, model, ct);
 
     public object Collect(IList<StreamingChunkDto> chunks, string model)
         => OpenAiChatSseEncoder.CollectFromChunks(

@@ -327,10 +327,6 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
         if (root.TryGetProperty("response_format", out var rf) && rf.ValueKind == JsonValueKind.Object)
             hints[OpenAiHints.ResponseFormat] = rf.Clone();
 
-        if (root.TryGetProperty("stream_options", out var so) && so.ValueKind == JsonValueKind.Object
-            && so.TryGetProperty("include_usage", out var iu) && iu.ValueKind == JsonValueKind.True)
-            hints[OpenAiHints.StreamIncludeUsage] = true;
-
         if (root.TryGetProperty("parallel_tool_calls", out var ptc) && ptc.ValueKind != JsonValueKind.Null)
             hints[OpenAiHints.ParallelToolCalls] = ptc.ValueKind != JsonValueKind.False;
 

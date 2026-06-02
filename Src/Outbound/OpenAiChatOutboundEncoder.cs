@@ -91,8 +91,10 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
             body["prompt_cache_key"] = pckStr;
         if (request.Hints.TryGetValue(OpenAiHints.SafetyIdentifier, out var si) && si is string siStr)
             body["safety_identifier"] = siStr;
-        if (request.Stream
-            && request.Hints.TryGetValue(OpenAiHints.StreamIncludeUsage, out var siu) && siu is true)
+        // Always request usage from the upstream on streaming calls — OpenAI only
+        // emits the final usage chunk when stream_options.include_usage=true, and
+        // the gateway needs it for metering regardless of the caller's preference.
+        if (request.Stream)
             body["stream_options"] = new { include_usage = true };
         if (request.Hints.TryGetValue(OpenAiHints.ReasoningEffort, out var re) && re is string reStr
             && !string.IsNullOrEmpty(reStr))

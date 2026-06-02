@@ -77,22 +77,21 @@ public class OpenAiToolChoiceAndReasoningTests
         assistantOut.GetProperty("content").GetString().Should().Be("2");
     }
 
-    // ── stream_options.include_usage hint ─────────────────────────────────────
+    // ── stream_options.include_usage is always forced on for streaming ────────
 
     [Fact]
-    public void OpenAiChat_StreamOptions_IncludeUsage_RoundTrip()
+    public void OpenAiChat_Streaming_AlwaysRequestsUsage()
     {
+        // The client did NOT set stream_options.include_usage, but the outbound
+        // encoder must still force it on so the gateway can meter tokens.
         var json = """
         {
           "model": "gpt-4o",
           "messages": [{"role": "user", "content": "hi"}],
-          "stream": true,
-          "stream_options": {"include_usage": true}
+          "stream": true
         }
         """;
         var transit = new OpenAiChatInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
-        transit.Hints.Should().ContainKey(OpenAiHints.StreamIncludeUsage);
-        transit.Hints[OpenAiHints.StreamIncludeUsage].Should().Be(true);
 
         var encoded = new OpenAiChatOutboundEncoder().Encode(transit);
         using var doc = JsonDocument.Parse(encoded);

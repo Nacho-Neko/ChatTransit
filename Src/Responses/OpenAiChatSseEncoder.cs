@@ -10,14 +10,14 @@ namespace Gateway.Shared.ChatTransit.Responses;
 /// Converts <see cref="StreamingChunkDto"/> events into OpenAI Chat Completions
 /// SSE chunks and the non-streaming aggregated <c>chat.completion</c> body.
 /// <para>Maps upstream <c>finish_reason</c> via <see cref="StopReasonMapper"/>,
-/// emits <c>reasoning_content</c> deltas, honors <c>stream_options.include_usage</c>,
-/// and forwards raw SSE chunks for same-protocol passthrough.</para>
+/// emits <c>reasoning_content</c> deltas, always appends a final usage chunk
+/// (required for gateway metering), and forwards raw SSE chunks for
+/// same-protocol passthrough.</para>
 /// </summary>
 public static class OpenAiChatSseEncoder
 {
     public static async IAsyncEnumerable<string> StreamAsync(
         IAsyncEnumerable<StreamingChunkDto> chunks, string model,
-        bool includeUsage = false,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var completionId = $"chatcmpl-{Guid.NewGuid():N}";
@@ -110,33 +110,33 @@ public static class OpenAiChatSseEncoder
         var finishReason = StopReasonMapper.DeriveOpenAiFinishReason(upstreamFinishReason, toolCallIndex >= 0);
         yield return FormatChunk(completionId, created, model, fingerprint, new { }, finishReason: finishReason);
 
-        if (includeUsage)
+        // Always emit the usage chunk. The gateway meters tokens by parsing this
+        // stream, so usage must be present unconditionally — there is no
+        // stream_options.include_usage gating anymore.
+        var promptDetails = cachedTokens > 0
+            ? (object?)new { cached_tokens = cachedTokens }
+            : null;
+        var completionDetails = reasoningTokens > 0
+            ? (object?)new { reasoning_tokens = reasoningTokens }
+            : null;
+        var usageChunk = new
         {
-            var promptDetails = cachedTokens > 0
-                ? (object?)new { cached_tokens = cachedTokens }
-                : null;
-            var completionDetails = reasoningTokens > 0
-                ? (object?)new { reasoning_tokens = reasoningTokens }
-                : null;
-            var usageChunk = new
+            id = completionId,
+            @object = "chat.completion.chunk",
+            created,
+            model,
+            system_fingerprint = fingerprint,
+            choices = Array.Empty<object>(),
+            usage = new
             {
-                id = completionId,
-                @object = "chat.completion.chunk",
-                created,
-                model,
-                system_fingerprint = fingerprint,
-                choices = Array.Empty<object>(),
-                usage = new
-                {
-                    prompt_tokens = promptTokens,
-                    completion_tokens = completionTokens,
-                    total_tokens = promptTokens + completionTokens,
-                    prompt_tokens_details = promptDetails,
-                    completion_tokens_details = completionDetails
-                }
-            };
-            yield return $"data: {JsonSerializer.Serialize(usageChunk)}\n\n";
-        }
+                prompt_tokens = promptTokens,
+                completion_tokens = completionTokens,
+                total_tokens = promptTokens + completionTokens,
+                prompt_tokens_details = promptDetails,
+                completion_tokens_details = completionDetails
+            }
+        };
+        yield return $"data: {JsonSerializer.Serialize(usageChunk)}\n\n";
 
         yield return "data: [DONE]\n\n";
     }
