@@ -160,6 +160,7 @@ public class UsageMetadata
     [JsonPropertyName("candidatesTokenCount")] public int CandidatesTokenCount { get; set; }
     [JsonPropertyName("totalTokenCount")] public int TotalTokenCount { get; set; }
     [JsonPropertyName("cachedContentTokenCount")][JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? CachedContentTokenCount { get; set; }
+    [JsonPropertyName("thoughtsTokenCount")][JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public int? ThoughtsTokenCount { get; set; }
 }
 
 // ── Model info (GET /v1beta/models) ──────────────────────────────────────────

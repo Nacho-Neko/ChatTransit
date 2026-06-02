@@ -55,6 +55,7 @@ public static class GeminiSseEncoder
         var promptTokens = 0;
         var completionTokens = 0;
         var cachedTokens = 0;
+        var reasoningTokens = 0;
         string? upstreamFinishReason = null;
         bool hadToolCalls = false;
 
@@ -92,6 +93,7 @@ public static class GeminiSseEncoder
                     promptTokens = ResolveUsageLong(chunk.Usage, promptTokens, ProviderUsageKeys.InputCandidates);
                     completionTokens = ResolveUsageLong(chunk.Usage, completionTokens, ProviderUsageKeys.OutputCandidates);
                     cachedTokens = ResolveUsageLong(chunk.Usage, cachedTokens, ProviderUsageKeys.CacheReadInputCandidates);
+                    reasoningTokens = ResolveUsageLong(chunk.Usage, reasoningTokens, ReasoningCandidates);
                     break;
             }
         }
@@ -120,7 +122,7 @@ public static class GeminiSseEncoder
                     Index = 0
                 }
             ],
-            UsageMetadata = BuildUsageMetadata(promptTokens, completionTokens, cachedTokens)
+            UsageMetadata = BuildUsageMetadata(promptTokens, completionTokens, cachedTokens, reasoningTokens)
         };
     }
 
@@ -176,6 +178,7 @@ public static class GeminiSseEncoder
         var promptTokens = 0;
         var completionTokens = 0;
         var cachedTokens = 0;
+        var reasoningTokens = 0;
         string? currentToolName = null;
         string? currentToolId = null;
         var currentToolArgs = new System.Text.StringBuilder();
@@ -236,6 +239,7 @@ public static class GeminiSseEncoder
                     promptTokens = ResolveUsageLong(chunk.Usage, promptTokens, ProviderUsageKeys.InputCandidates);
                     completionTokens = ResolveUsageLong(chunk.Usage, completionTokens, ProviderUsageKeys.OutputCandidates);
                     cachedTokens = ResolveUsageLong(chunk.Usage, cachedTokens, ProviderUsageKeys.CacheReadInputCandidates);
+                    reasoningTokens = ResolveUsageLong(chunk.Usage, reasoningTokens, ReasoningCandidates);
                     break;
 
                 case StreamingContentType.RawSse when chunk.Text != null:
@@ -257,7 +261,7 @@ public static class GeminiSseEncoder
         var finishReason = StopReasonMapper.DeriveGeminiFinishReason(upstreamFinishReason, hadToolCalls);
         yield return new StreamItem
         {
-            Response = BuildFinalResponse([], promptTokens, completionTokens, cachedTokens, hasOutput, finishReason)
+            Response = BuildFinalResponse([], promptTokens, completionTokens, cachedTokens, reasoningTokens, hasOutput, finishReason)
         };
     }
 
@@ -277,6 +281,7 @@ public static class GeminiSseEncoder
         int promptTokens,
         int completionTokens,
         int cachedTokens,
+        int reasoningTokens,
         bool hasOutput,
         string finishReason)
     {
@@ -291,7 +296,7 @@ public static class GeminiSseEncoder
                     Index = 0
                 }
             ],
-            UsageMetadata = BuildUsageMetadata(promptTokens, completionTokens, cachedTokens)
+            UsageMetadata = BuildUsageMetadata(promptTokens, completionTokens, cachedTokens, reasoningTokens)
         };
     }
 
@@ -308,12 +313,15 @@ public static class GeminiSseEncoder
         ]
     };
 
-    private static UsageMetadata BuildUsageMetadata(int prompt, int completion, int cached) => new()
+    private static UsageMetadata BuildUsageMetadata(int prompt, int completion, int cached, int reasoning = 0) => new()
     {
         PromptTokenCount = prompt,
         CandidatesTokenCount = completion,
-        TotalTokenCount = prompt + completion,
-        CachedContentTokenCount = cached > 0 ? cached : null
+        // Per the Gemini API, totalTokenCount counts prompt + output candidates +
+        // thoughts (thoughtsTokenCount is separate from candidatesTokenCount).
+        TotalTokenCount = prompt + completion + reasoning,
+        CachedContentTokenCount = cached > 0 ? cached : null,
+        ThoughtsTokenCount = reasoning > 0 ? reasoning : null
     };
 
     private static void FlushToolCall(
@@ -345,6 +353,9 @@ public static class GeminiSseEncoder
     private static bool IsThoughtChunk(StreamingChunkDto chunk)
         => string.Equals(chunk.FinishReason, "thought", StringComparison.OrdinalIgnoreCase)
            || string.Equals(chunk.AuthorRole, "thought", StringComparison.OrdinalIgnoreCase);
+
+    private static readonly string[] ReasoningCandidates =
+        [ProviderUsageKeys.ReasoningTokens, "reasoning_tokens", "thoughtsTokenCount"];
 
     private static int ResolveUsageLong(Dictionary<string, long> usage, int current, string[] keys)
     {
