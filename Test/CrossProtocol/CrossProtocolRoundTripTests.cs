@@ -12,8 +12,6 @@ namespace ChatTransit.Tests.CrossProtocol;
 /// </summary>
 public class CrossProtocolRoundTripTests
 {
-    private static readonly JsonSerializerOptions _jsonOpts = new() { WriteIndented = false };
-
     // ── OpenAI Chat → Anthropic ──────────────────────────────────────────────
 
     [Fact]

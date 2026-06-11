@@ -198,7 +198,7 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
             }
 
             // executableCode / codeExecutionResult ? code execution tool round-trip
-            if (part.TryGetProperty("executableCode", out var execCode))
+            if (part.TryGetProperty("executableCode", out _))
             {
                 var raw = new TextContent("[executable_code]");
                 raw.AdditionalProperties ??= new AdditionalPropertiesDictionary();
@@ -207,7 +207,7 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                 contents.Add(raw);
                 continue;
             }
-            if (part.TryGetProperty("codeExecutionResult", out var codeRes))
+            if (part.TryGetProperty("codeExecutionResult", out _))
             {
                 var raw = new TextContent("[code_execution_result]");
                 raw.AdditionalProperties ??= new AdditionalPropertiesDictionary();

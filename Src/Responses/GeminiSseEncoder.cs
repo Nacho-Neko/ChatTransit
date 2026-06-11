@@ -182,7 +182,6 @@ public static class GeminiSseEncoder
         string? currentToolName = null;
         string? currentToolId = null;
         var currentToolArgs = new System.Text.StringBuilder();
-        var hasOutput = false;
         string? upstreamFinishReason = null;
         bool hadToolCalls = false;
 
@@ -194,7 +193,6 @@ public static class GeminiSseEncoder
             switch (chunk.ContentType)
             {
                 case StreamingContentType.Thinking when chunk.Text != null:
-                    hasOutput = true;
                     yield return new StreamItem
                     {
                         Response = MakeChunk(new GeminiPart { Text = chunk.Text, Thought = true })
@@ -202,7 +200,6 @@ public static class GeminiSseEncoder
                     break;
 
                 case StreamingContentType.Text when chunk.Text != null:
-                    hasOutput = true;
                     yield return new StreamItem
                     {
                         Response = MakeChunk(new GeminiPart
@@ -218,7 +215,6 @@ public static class GeminiSseEncoder
                     {
                         if (currentToolName != null)
                         {
-                            hasOutput = true;
                             var parsedPrev = TryParseArgs(currentToolArgs);
                             yield return new StreamItem
                             {
@@ -250,7 +246,6 @@ public static class GeminiSseEncoder
 
         if (currentToolName != null)
         {
-            hasOutput = true;
             var parsedArgs = TryParseArgs(currentToolArgs);
             yield return new StreamItem
             {
@@ -261,7 +256,7 @@ public static class GeminiSseEncoder
         var finishReason = StopReasonMapper.DeriveGeminiFinishReason(upstreamFinishReason, hadToolCalls);
         yield return new StreamItem
         {
-            Response = BuildFinalResponse([], promptTokens, completionTokens, cachedTokens, reasoningTokens, hasOutput, finishReason)
+            Response = BuildFinalResponse([], promptTokens, completionTokens, cachedTokens, reasoningTokens, finishReason)
         };
     }
 
@@ -282,7 +277,6 @@ public static class GeminiSseEncoder
         int completionTokens,
         int cachedTokens,
         int reasoningTokens,
-        bool hasOutput,
         string finishReason)
     {
         return new GenerateContentResponse
