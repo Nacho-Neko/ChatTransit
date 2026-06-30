@@ -204,7 +204,15 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
     private static object BuildThoughtPart(AIContent content)
     {
         var text = ThinkingMapper.GetThinkingText(content) ?? "";
-        var sig = ThinkingMapper.GetGeminiThoughtSignature(content);
+        // Cross-protocol round-trip: a non-Gemini caller (Claude Code on the
+        // Anthropic API, or an OpenAI-format client) routed onto a Gemini-native
+        // backend (Antigravity → PA → Claude/Vertex) carries the opaque thinking
+        // signature under that protocol's own key. The blob is the SAME value the
+        // upstream tunnels as thoughtSignature, so recover it from any carrier.
+        // Dropping it makes PA emit a signature-less Anthropic thinking block and
+        // the Vertex adapter 400s with
+        // "messages.N.content.0.thinking.signature: Field required".
+        var sig = ThinkingMapper.GetAnySignature(content);
         var part = new Dictionary<string, object?>
         {
             ["thought"] = true,

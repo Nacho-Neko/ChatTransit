@@ -245,7 +245,10 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
             item["summary"] = new[] { new { type = "summary_text", text } };
         }
 
-        var enc = ThinkingMapper.GetOpenAiEncryptedContent(content);
+        // Recover the signature from any protocol carrier so a cross-protocol caller
+        // (Anthropic/Gemini client) routed onto an OpenAI Responses backend still
+        // replays the opaque reasoning blob as encrypted_content.
+        var enc = ThinkingMapper.GetAnySignature(content);
         if (!string.IsNullOrEmpty(enc)) item["encrypted_content"] = enc;
 
         return item;

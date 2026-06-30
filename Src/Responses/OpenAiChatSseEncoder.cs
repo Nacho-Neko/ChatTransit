@@ -28,6 +28,11 @@ public static class OpenAiChatSseEncoder
         long reasoningTokens = 0;
         string? upstreamFinishReason = null;
         var firstDelta = true;
+        // Opaque reasoning signature (Gemini thoughtSignature / Anthropic signature
+        // via PA). Chat Completions has no standard per-delta signature field, so we
+        // carry it as a `reasoning.encrypted_content` object emitted once before the
+        // finish chunk — symmetric with OpenAiChatInboundDecoder, which reads it back.
+        string? reasoningSignature = null;
 
         await foreach (var chunk in chunks.WithCancellation(ct))
         {
@@ -36,12 +41,17 @@ public static class OpenAiChatSseEncoder
 
             switch (chunk.ContentType)
             {
-                case StreamingContentType.Thinking when chunk.Text != null:
+                case StreamingContentType.Thinking when chunk.Text != null || !string.IsNullOrEmpty(chunk.ReasoningSignature):
                     {
-                        yield return FormatChunk(completionId, created, model, fingerprint,
-                            BuildDelta(firstDelta, reasoningContent: chunk.Text),
-                            finishReason: null);
-                        firstDelta = false;
+                        if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                            reasoningSignature = chunk.ReasoningSignature;
+                        if (chunk.Text != null)
+                        {
+                            yield return FormatChunk(completionId, created, model, fingerprint,
+                                BuildDelta(firstDelta, reasoningContent: chunk.Text),
+                                finishReason: null);
+                            firstDelta = false;
+                        }
                         break;
                     }
 
@@ -107,6 +117,17 @@ public static class OpenAiChatSseEncoder
             }
         }
 
+        // Flush the captured reasoning signature once, before the finish chunk, so a
+        // client that replays it (encrypted_content) keeps the thinking block valid
+        // when the request is routed back through the Claude/Gemini-via-PA path.
+        if (!string.IsNullOrEmpty(reasoningSignature))
+        {
+            yield return FormatChunk(completionId, created, model, fingerprint,
+                BuildDelta(firstDelta, reasoning: new { encrypted_content = reasoningSignature }),
+                finishReason: null);
+            firstDelta = false;
+        }
+
         var finishReason = StopReasonMapper.DeriveOpenAiFinishReason(upstreamFinishReason, toolCallIndex >= 0);
         yield return FormatChunk(completionId, created, model, fingerprint, new { }, finishReason: finishReason);
 
@@ -158,6 +179,7 @@ public static class OpenAiChatSseEncoder
         var fingerprint = $"fp_{Guid.NewGuid():N}"[..16];
         var contentBuffer = new System.Text.StringBuilder();
         var reasoningBuffer = new System.Text.StringBuilder();
+        string? reasoningSignature = null;
         var toolCalls = new List<object>();
         string? currentToolId = null;
         string? currentToolName = null;
@@ -172,8 +194,11 @@ public static class OpenAiChatSseEncoder
 
             switch (chunk.ContentType)
             {
-                case StreamingContentType.Thinking when chunk.Text != null:
-                    reasoningBuffer.Append(chunk.Text);
+                case StreamingContentType.Thinking:
+                    if (chunk.Text != null)
+                        reasoningBuffer.Append(chunk.Text);
+                    if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                        reasoningSignature = chunk.ReasoningSignature;
                     break;
 
                 case StreamingContentType.Text when chunk.Text != null:
@@ -201,12 +226,19 @@ public static class OpenAiChatSseEncoder
 
         var finishReason = StopReasonMapper.DeriveOpenAiFinishReason(upstreamFinishReason, toolCalls.Count > 0);
         var reasoning = reasoningBuffer.Length > 0 ? reasoningBuffer.ToString() : (string?)null;
+        // Carry the opaque signature as a reasoning.encrypted_content object so a
+        // replaying client keeps the thinking block valid on the next turn (read
+        // back by OpenAiChatInboundDecoder → re-emitted as thoughtSignature).
+        var reasoningObj = !string.IsNullOrEmpty(reasoningSignature)
+            ? (object?)new { encrypted_content = reasoningSignature }
+            : null;
         var message = toolCalls.Count > 0
             ? (object)new
             {
                 role = "assistant",
                 content = contentBuffer.Length > 0 ? contentBuffer.ToString() : (string?)null,
                 reasoning_content = reasoning,
+                reasoning = reasoningObj,
                 tool_calls = toolCalls
             }
             : new
@@ -214,6 +246,7 @@ public static class OpenAiChatSseEncoder
                 role = "assistant",
                 content = contentBuffer.ToString(),
                 reasoning_content = reasoning,
+                reasoning = reasoningObj,
                 tool_calls = (List<object>?)null
             };
 
@@ -246,7 +279,8 @@ public static class OpenAiChatSseEncoder
     // ── Formatting helpers ────────────────────────────────────────────────────
 
     private static object BuildDelta(bool firstDelta,
-        string? content = null, string? reasoningContent = null, object? toolCalls = null)
+        string? content = null, string? reasoningContent = null, object? toolCalls = null,
+        object? reasoning = null)
     {
         // Per the official spec, delta SHOULD omit fields that have no value
         // (rather than emitting them as null). Some SDKs treat `"content": null`
@@ -258,6 +292,7 @@ public static class OpenAiChatSseEncoder
         if (content != null) delta["content"] = content;
         if (reasoningContent != null) delta["reasoning_content"] = reasoningContent;
         if (toolCalls != null) delta["tool_calls"] = toolCalls;
+        if (reasoning != null) delta["reasoning"] = reasoning;
         return delta;
     }
 

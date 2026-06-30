@@ -48,6 +48,7 @@ public static class GeminiSseEncoder
     {
         var contentBuffer = new System.Text.StringBuilder();
         var thinkingBuffer = new System.Text.StringBuilder();
+        string? thinkingSignature = null;
         var toolCalls = new List<GeminiPart>();
         string? currentToolName = null;
         string? currentToolId = null;
@@ -66,8 +67,14 @@ public static class GeminiSseEncoder
 
             switch (chunk.ContentType)
             {
-                case StreamingContentType.Thinking when chunk.Text != null:
-                    thinkingBuffer.Append(chunk.Text);
+                case StreamingContentType.Thinking:
+                    if (chunk.Text != null)
+                        thinkingBuffer.Append(chunk.Text);
+                    // Capture the opaque thoughtSignature so the aggregated thought
+                    // part can echo it back (the merged single-block shape mirrors
+                    // the existing thinking-text aggregation). Last non-empty wins.
+                    if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                        thinkingSignature = chunk.ReasoningSignature;
                     break;
 
                 case StreamingContentType.Text when chunk.Text != null:
@@ -101,8 +108,13 @@ public static class GeminiSseEncoder
         FlushToolCall(toolCalls, ref currentToolName, ref currentToolId, currentToolArgs);
 
         var parts = new List<GeminiPart>();
-        if (thinkingBuffer.Length > 0)
-            parts.Add(new GeminiPart { Text = thinkingBuffer.ToString(), Thought = true });
+        if (thinkingBuffer.Length > 0 || !string.IsNullOrEmpty(thinkingSignature))
+            parts.Add(new GeminiPart
+            {
+                Text = thinkingBuffer.Length > 0 ? thinkingBuffer.ToString() : null,
+                Thought = true,
+                ThoughtSignature = thinkingSignature,
+            });
         if (contentBuffer.Length > 0)
             parts.Add(new GeminiPart { Text = contentBuffer.ToString() });
         parts.AddRange(toolCalls);
@@ -192,10 +204,20 @@ public static class GeminiSseEncoder
 
             switch (chunk.ContentType)
             {
-                case StreamingContentType.Thinking when chunk.Text != null:
+                case StreamingContentType.Thinking when chunk.Text != null || !string.IsNullOrEmpty(chunk.ReasoningSignature):
+                    // Echo the opaque thoughtSignature back so a Gemini-format
+                    // caller can replay it next turn (Gemini 3 thinking continuity;
+                    // Claude-via-PA "thinking.signature: Field required"). A
+                    // signature-only chunk (no text) still emits a thought part so
+                    // the signature is not lost.
                     yield return new StreamItem
                     {
-                        Response = MakeChunk(new GeminiPart { Text = chunk.Text, Thought = true })
+                        Response = MakeChunk(new GeminiPart
+                        {
+                            Text = chunk.Text,
+                            Thought = true,
+                            ThoughtSignature = chunk.ReasoningSignature,
+                        })
                     };
                     break;
 

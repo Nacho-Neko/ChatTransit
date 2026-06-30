@@ -268,7 +268,11 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         }
 
         var text = ThinkingMapper.GetThinkingText(content) ?? "";
-        var sig = ThinkingMapper.GetAnthropicSignature(content);
+        // Recover the signature from any protocol carrier: a cross-protocol caller
+        // (OpenAI/Gemini client) routed onto an Anthropic-native backend replays the
+        // blob under its own key, but Anthropic requires it as `signature` or it
+        // 400s with "messages.N.content.0.thinking.signature: Field required".
+        var sig = ThinkingMapper.GetAnySignature(content);
         var block = new Dictionary<string, object?>
         {
             ["type"] = "thinking",

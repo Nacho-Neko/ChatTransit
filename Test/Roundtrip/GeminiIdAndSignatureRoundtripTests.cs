@@ -128,6 +128,42 @@ public class GeminiIdAndSignatureRoundtripTests
     }
 
     [Fact]
+    public void AnthropicThinkingSignature_CrossEncodesTo_GeminiThoughtSignature()
+    {
+        // Cross-protocol: a Claude-Code (Anthropic) caller routed onto a
+        // Gemini-native backend (Antigravity → PA → Claude/Vertex). The opaque
+        // thinking signature must survive Anthropic-in → Gemini-out, otherwise PA
+        // emits a signature-less Anthropic thinking block and the Vertex adapter
+        // 400s with "messages.N.content.0.thinking.signature: Field required".
+        const string sig = "ErcBCkgIBhABGAI...opaque";
+        var json = $$"""
+        {
+          "model": "claude-sonnet-4-6",
+          "messages": [
+            { "role": "assistant", "content": [
+              { "type": "thinking", "thinking": "internal reasoning", "signature": "{{sig}}" },
+              { "type": "text", "text": "Hello world" }
+            ] },
+            { "role": "user", "content": "continue" }
+          ]
+        }
+        """;
+        var transit = new AnthropicInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+
+        var thinking = transit.Messages.SelectMany(m => m.Contents)
+            .First(ThinkingMapper.IsThinkingContent);
+        ThinkingMapper.GetAnthropicSignature(thinking).Should().Be(sig);
+
+        var encoded = new GeminiOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var thoughtPart = doc.RootElement.GetProperty("contents").EnumerateArray()
+            .SelectMany(c => c.GetProperty("parts").EnumerateArray())
+            .First(p => p.TryGetProperty("thought", out var t) && t.GetBoolean());
+        thoughtPart.GetProperty("thoughtSignature").GetString().Should().Be(sig,
+            "the Anthropic signature must be re-emitted as the Gemini thoughtSignature");
+    }
+
+    [Fact]
     public void GenerationConfig_PenaltiesAndExtras_RoundTrip()
     {
         var json = """

@@ -63,6 +63,10 @@ public static class OpenAiResponsesSseEncoder
         var summaryIndex = 0;
         var contentIndex = 0;
         var reasoningTextBuffer = new System.Text.StringBuilder();
+        // Opaque reasoning signature (Gemini thoughtSignature / Anthropic signature
+        // tunnelled through PA). Carried back to the client as the reasoning item's
+        // encrypted_content so an OpenAI Responses caller can replay it next turn.
+        string? reasoningSignature = null;
         var outputTextBuffer = new System.Text.StringBuilder();
         var functionArgsBuffer = new System.Text.StringBuilder();
         string? currentFunctionName = null;
@@ -120,12 +124,18 @@ public static class OpenAiResponsesSseEncoder
                         summary_index = summaryIndex,
                         part = new { type = "summary_text", text }
                     });
-                    finalOutput.Add(new Dictionary<string, object?>
+                    var reasoningItem = new Dictionary<string, object?>
                     {
                         ["type"] = "reasoning",
                         ["id"] = currentItemId,
                         ["summary"] = new[] { new { type = "summary_text", text } }
-                    });
+                    };
+                    // Preserve the opaque signature so the caller can replay it
+                    // (decoded back by OpenAiResponsesInboundDecoder → re-emitted as
+                    // thoughtSignature by GeminiOutboundEncoder).
+                    if (!string.IsNullOrEmpty(reasoningSignature))
+                        reasoningItem["encrypted_content"] = reasoningSignature;
+                    finalOutput.Add(reasoningItem);
                     yield return Emit("response.output_item.done", new
                     {
                         type = "response.output_item.done",
@@ -134,6 +144,7 @@ public static class OpenAiResponsesSseEncoder
                         item = finalOutput[^1]
                     });
                     reasoningTextBuffer.Clear();
+                    reasoningSignature = null;
                     break;
                 }
                 case "message":
@@ -222,7 +233,7 @@ public static class OpenAiResponsesSseEncoder
 
             switch (chunk.ContentType)
             {
-                case StreamingContentType.Thinking when chunk.Text != null:
+                case StreamingContentType.Thinking when chunk.Text != null || !string.IsNullOrEmpty(chunk.ReasoningSignature):
                 {
                     if (currentBlockKind != "reasoning")
                     {
@@ -253,16 +264,23 @@ public static class OpenAiResponsesSseEncoder
                             part = new { type = "summary_text", text = "" }
                         });
                     }
-                    yield return Emit("response.reasoning_summary_text.delta", new
+                    // Capture the opaque signature (may arrive on its own chunk with
+                    // no text); it is flushed as encrypted_content when the block closes.
+                    if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                        reasoningSignature = chunk.ReasoningSignature;
+                    if (chunk.Text != null)
                     {
-                        type = "response.reasoning_summary_text.delta",
-                        sequence_number = seq,
-                        item_id = currentItemId,
-                        output_index = outputIndex,
-                        summary_index = summaryIndex,
-                        delta = chunk.Text
-                    });
-                    reasoningTextBuffer.Append(chunk.Text);
+                        yield return Emit("response.reasoning_summary_text.delta", new
+                        {
+                            type = "response.reasoning_summary_text.delta",
+                            sequence_number = seq,
+                            item_id = currentItemId,
+                            output_index = outputIndex,
+                            summary_index = summaryIndex,
+                            delta = chunk.Text
+                        });
+                        reasoningTextBuffer.Append(chunk.Text);
+                    }
                     break;
                 }
 
@@ -412,6 +430,7 @@ public static class OpenAiResponsesSseEncoder
         var responseId = $"resp_{Guid.NewGuid():N}";
         var contentBuffer = new System.Text.StringBuilder();
         var reasoningBuffer = new System.Text.StringBuilder();
+        string? reasoningSignature = null;
         var toolCalls = new List<object>();
         string? currentToolItemId = null;
         string? currentToolCallId = null;
@@ -426,8 +445,11 @@ public static class OpenAiResponsesSseEncoder
                 upstreamFinishReason = chunk.FinishReason;
             switch (chunk.ContentType)
             {
-                case StreamingContentType.Thinking when chunk.Text != null:
-                    reasoningBuffer.Append(chunk.Text);
+                case StreamingContentType.Thinking:
+                    if (chunk.Text != null)
+                        reasoningBuffer.Append(chunk.Text);
+                    if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                        reasoningSignature = chunk.ReasoningSignature;
                     break;
                 case StreamingContentType.Text when chunk.Text != null:
                     contentBuffer.Append(chunk.Text);
@@ -460,13 +482,18 @@ public static class OpenAiResponsesSseEncoder
             currentToolName, currentToolArgs);
 
         var output = new List<object>();
-        if (reasoningBuffer.Length > 0)
+        if (reasoningBuffer.Length > 0 || !string.IsNullOrEmpty(reasoningSignature))
         {
-            output.Add(new
+            var reasoningItem = new Dictionary<string, object?>
             {
-                type = "reasoning",
-                summary = new[] { new { type = "summary_text", text = reasoningBuffer.ToString() } }
-            });
+                ["type"] = "reasoning",
+                ["summary"] = new[] { new { type = "summary_text", text = reasoningBuffer.ToString() } }
+            };
+            // Carry the opaque signature back so an OpenAI Responses caller can
+            // replay it (round-tripped to thoughtSignature by GeminiOutboundEncoder).
+            if (!string.IsNullOrEmpty(reasoningSignature))
+                reasoningItem["encrypted_content"] = reasoningSignature;
+            output.Add(reasoningItem);
         }
         if (contentBuffer.Length > 0 || toolCalls.Count == 0)
         {

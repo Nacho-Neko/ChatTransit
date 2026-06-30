@@ -129,6 +129,24 @@ public static class ThinkingMapper
     public static string? GetOpenAiReasoningItemId(AIContent content)
         => GetAdditional(content, OpenAiReasoningItemId) as string;
 
+    /// <summary>
+    /// Returns the opaque thinking signature regardless of which protocol's carrier
+    /// it arrived under (Gemini <c>thoughtSignature</c> / Anthropic <c>signature</c>
+    /// / OpenAI <c>encrypted_content</c>), or null if none is present.
+    ///
+    /// <para>The blob is model-bound, not protocol-bound: within a conversation the
+    /// backend model is fixed, so the signature it produced rides back to the client
+    /// in <em>the client's</em> protocol field and returns under that same key. Every
+    /// outbound encoder therefore recovers it from any carrier and re-emits it in its
+    /// own native field, so a cross-protocol caller (e.g. an OpenAI client routed onto
+    /// a Claude backend) does not lose the signature and trigger the upstream's
+    /// "thinking.signature: Field required" rejection.</para>
+    /// </summary>
+    public static string? GetAnySignature(AIContent content)
+        => GetGeminiThoughtSignature(content)
+           ?? GetAnthropicSignature(content)
+           ?? GetOpenAiEncryptedContent(content);
+
     /// <summary>Sets a thinking signature on an existing thinking content (mutates).</summary>
     public static void SetAnthropicSignature(AIContent content, string? signature)
         => SetAdditional(content, AnthropicSignature, signature);

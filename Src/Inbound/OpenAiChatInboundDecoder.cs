@@ -99,23 +99,23 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
         // Assistant messages — may contain text + reasoning_content + tool_calls
         if (role == ChatRole.Assistant)
         {
-            // reasoning_content (DeepSeek / Kimi / Doubao / o1)
-            if (msgEl.TryGetProperty("reasoning_content", out var rc)
-                && rc.GetString() is { Length: > 0 } reasoning)
+            // reasoning_content (DeepSeek / Kimi / Doubao / o1) carries the thinking
+            // TEXT; the sibling reasoning object carries the opaque signature as
+            // encrypted_content. Capture BOTH into a single thinking block so the
+            // signature survives even when reasoning text is also present — needed
+            // for the cross-protocol round-trip (Gemini thoughtSignature / Anthropic
+            // signature tunnelled through PA). Reading them independently (the old
+            // if/else) dropped the signature whenever reasoning_content was present.
+            var reasoningText = msgEl.TryGetProperty("reasoning_content", out var rc)
+                ? rc.GetString() : null;
+            var reasoningEnc = msgEl.TryGetProperty("reasoning", out var reasoningObj)
+                               && reasoningObj.ValueKind == JsonValueKind.Object
+                               && reasoningObj.TryGetProperty("encrypted_content", out var ec)
+                ? ec.GetString() : null;
+            if (!string.IsNullOrEmpty(reasoningText) || !string.IsNullOrEmpty(reasoningEnc))
             {
-                contents.Add(ThinkingMapper.CreateThinkingContent(reasoning));
-            }
-            // reasoning summary (OpenAI Responses API leak-through)
-            else if (msgEl.TryGetProperty("reasoning", out var reasoningObj)
-                     && reasoningObj.ValueKind == JsonValueKind.Object)
-            {
-                var enc = reasoningObj.TryGetProperty("encrypted_content", out var ec)
-                    ? ec.GetString() : null;
-                if (!string.IsNullOrEmpty(enc))
-                {
-                    var empty = ThinkingMapper.CreateThinkingContent("", openAiEncryptedContent: enc);
-                    contents.Add(empty);
-                }
+                contents.Add(ThinkingMapper.CreateThinkingContent(
+                    reasoningText ?? "", openAiEncryptedContent: reasoningEnc));
             }
 
             // Text content alongside tool_calls
