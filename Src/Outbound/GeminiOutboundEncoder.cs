@@ -122,18 +122,31 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
 
     private static List<object> BuildContents(IList<ChatMessage> messages)
     {
+        // Cross-protocol name recovery: Anthropic tool_result / OpenAI tool
+        // messages carry only the call id — the function name lives solely on
+        // the originating call. Map every call id to its name up front so
+        // BuildFunctionResponsePart can restore it (see there for why).
+        var callNames = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var fcc in messages.SelectMany(m => m.Contents).OfType<FunctionCallContent>())
+        {
+            if (!string.IsNullOrEmpty(fcc.CallId) && !string.IsNullOrEmpty(fcc.Name))
+                callNames.TryAdd(fcc.CallId, fcc.Name);
+        }
+
         var result = new List<object>();
         foreach (var msg in messages)
         {
             var role = msg.Role == ChatRole.Assistant ? "model" : "user";
-            var parts = BuildParts(msg.Contents);
+            var parts = BuildParts(msg.Contents, callNames);
             if (parts.Count > 0)
                 result.Add(new { role, parts });
         }
         return result;
     }
 
-    private static List<object> BuildParts(IList<AIContent> contents)
+    private static List<object> BuildParts(
+        IList<AIContent> contents,
+        IReadOnlyDictionary<string, string> callNames)
     {
         var parts = new List<object>();
         foreach (var c in contents)
@@ -194,7 +207,7 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
                     break;
 
                 case FunctionResultContent frc:
-                    parts.Add(BuildFunctionResponsePart(frc));
+                    parts.Add(BuildFunctionResponsePart(frc, callNames));
                     break;
             }
         }
@@ -255,7 +268,9 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
         return part;
     }
 
-    private static object BuildFunctionResponsePart(FunctionResultContent frc)
+    private static object BuildFunctionResponsePart(
+        FunctionResultContent frc,
+        IReadOnlyDictionary<string, string> callNames)
     {
         // Determine the real function name. The CallId may be an opaque id
         // (Gemini 3) — in that case we stored the original name in additional props.
@@ -263,6 +278,15 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
         if (frc.AdditionalProperties?.TryGetValue("transit.gemini.function_name", out var fn) == true
             && fn is string fnStr)
             funcName = fnStr;
+        // Cross-protocol (Anthropic tool_result / OpenAI tool message): the
+        // inbound block has no function name, only the call id. Recover the
+        // name from the matching FunctionCallContent. Without this the id was
+        // emitted as `name` with no `id` field, so id-pairing downstream
+        // (e.g. the Anthropic-Vertex adapter behind Antigravity PA) minted a
+        // fresh mismatched tool_use_id and the upstream rejected the request.
+        if (funcName is null && !string.IsNullOrEmpty(frc.CallId)
+            && callNames.TryGetValue(frc.CallId, out var mapped))
+            funcName = mapped;
         funcName ??= frc.CallId;
 
         var hasGeminiId = frc.AdditionalProperties?.TryGetValue("transit.gemini.has_id", out var v) == true

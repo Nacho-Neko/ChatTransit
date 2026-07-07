@@ -50,6 +50,83 @@ public class CrossProtocolToolResultAndFormatTests
     }
 
     /// <summary>
+    /// Anthropic <c>tool_result</c> carries only <c>tool_use_id</c> — the
+    /// function name exists solely on the paired <c>tool_use</c>. The Gemini
+    /// encoder must recover that name and echo the id, otherwise the
+    /// functionResponse goes out as <c>{name: "&lt;id&gt;"}</c> with no id and
+    /// downstream Anthropic adapters (Antigravity PA) mint a mismatched
+    /// tool_use_id and 400 ("unexpected tool_use_id found in tool_result blocks").
+    /// </summary>
+    [Fact]
+    public void Anthropic_ToolResult_To_Gemini_RestoresFunctionNameAndId()
+    {
+        var json = """
+        {
+          "model": "claude-opus-4-6-thinking",
+          "max_tokens": 1024,
+          "messages": [
+            {"role": "user", "content": "read the file"},
+            {"role": "assistant", "content": [
+              {"type": "tool_use", "id": "tooluse_YwZf4rS6VWyN2otOui0mEz", "name": "read_file", "input": {"path": "a.txt"}}
+            ]},
+            {"role": "user", "content": [
+              {"type": "tool_result", "tool_use_id": "tooluse_YwZf4rS6VWyN2otOui0mEz", "content": "file contents"}
+            ]}
+          ]
+        }
+        """;
+        var transit = new AnthropicInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new GeminiOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+
+        var contents = doc.RootElement.GetProperty("contents").EnumerateArray().ToList();
+
+        var fc = contents[1].GetProperty("parts").EnumerateArray()
+            .First(p => p.TryGetProperty("functionCall", out _))
+            .GetProperty("functionCall");
+        fc.GetProperty("name").GetString().Should().Be("read_file");
+        fc.GetProperty("id").GetString().Should().Be("tooluse_YwZf4rS6VWyN2otOui0mEz");
+
+        var fr = contents[2].GetProperty("parts").EnumerateArray()
+            .First(p => p.TryGetProperty("functionResponse", out _))
+            .GetProperty("functionResponse");
+        fr.GetProperty("name").GetString().Should().Be("read_file");
+        fr.GetProperty("id").GetString().Should().Be("tooluse_YwZf4rS6VWyN2otOui0mEz");
+    }
+
+    /// <summary>
+    /// Same lost-name shape via OpenAI Chat: the <c>tool</c> role message only
+    /// carries <c>tool_call_id</c>; the Gemini encoder must map it back to the
+    /// function name from the assistant's <c>tool_calls</c>.
+    /// </summary>
+    [Fact]
+    public void OpenAiChat_ToolMessage_To_Gemini_RestoresFunctionNameAndId()
+    {
+        var json = """
+        {
+          "model": "gpt-4o",
+          "messages": [
+            {"role": "user", "content": "what's the weather"},
+            {"role": "assistant", "tool_calls": [
+              {"id": "call_abc123", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"SF\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_abc123", "content": "sunny"}
+          ]
+        }
+        """;
+        var transit = new OpenAiChatInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new GeminiOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+
+        var fr = doc.RootElement.GetProperty("contents").EnumerateArray()
+            .SelectMany(c => c.GetProperty("parts").EnumerateArray())
+            .First(p => p.TryGetProperty("functionResponse", out _))
+            .GetProperty("functionResponse");
+        fr.GetProperty("name").GetString().Should().Be("get_weather");
+        fr.GetProperty("id").GetString().Should().Be("call_abc123");
+    }
+
+    /// <summary>
     /// P1-6: <c>response_format:{type:"json_schema", json_schema:{schema:{...}}}</c>
     /// on the inbound OpenAI Chat request must translate to Gemini's
     /// <c>generationConfig.responseSchema</c> + <c>responseMimeType:"application/json"</c>
