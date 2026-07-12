@@ -182,6 +182,132 @@ public class CrossProtocolToolResultAndFormatTests
     }
 
     /// <summary>
+    /// Chat-shaped <c>response_format:{type:"json_object"}</c> routed to the
+    /// Responses API must be upgraded to a permissive <c>json_schema</c>
+    /// text.format when the input messages don't contain the word "json" —
+    /// legacy JSON mode 400s upstream in that case, which cross-protocol
+    /// callers routinely trip over.
+    /// </summary>
+    [Fact]
+    public void OpenAiChat_ResponseFormatJsonObject_To_Responses_UpgradesToJsonSchema()
+    {
+        var json = """
+        {
+          "model": "gpt-5.5",
+          "messages": [{"role": "user", "content": "hi"}],
+          "response_format": {"type": "json_object"}
+        }
+        """;
+        var transit = new OpenAiChatInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new OpenAiResponsesOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var format = doc.RootElement.GetProperty("text").GetProperty("format");
+        format.GetProperty("type").GetString().Should().Be("json_schema");
+        format.GetProperty("strict").GetBoolean().Should().BeFalse();
+        format.GetProperty("schema").GetProperty("type").GetString().Should().Be("object");
+        format.GetProperty("schema").GetProperty("additionalProperties").GetBoolean().Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A compliant Chat-shaped <c>json_object</c> request — the word "json"
+    /// appears in the input messages, so JSON mode is accepted upstream — must
+    /// pass through as native <c>text.format:{type:"json_object"}</c> instead
+    /// of being rewritten.
+    /// </summary>
+    [Fact]
+    public void OpenAiChat_ResponseFormatJsonObject_WithJsonInMessages_To_Responses_PassesThrough()
+    {
+        var json = """
+        {
+          "model": "gpt-5.5",
+          "messages": [{"role": "user", "content": "reply with a JSON object"}],
+          "response_format": {"type": "json_object"}
+        }
+        """;
+        var transit = new OpenAiChatInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new OpenAiResponsesOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var format = doc.RootElement.GetProperty("text").GetProperty("format");
+        format.GetProperty("type").GetString().Should().Be("json_object");
+        format.TryGetProperty("schema", out _).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Same upgrade for native Responses callers: a passthrough
+    /// <c>text:{format:{type:"json_object"}, verbosity:"low"}</c> config swaps
+    /// the format for the permissive json_schema while sibling fields survive.
+    /// </summary>
+    [Fact]
+    public void OpenAiResponses_TextFormatJsonObject_RoundTrip_UpgradesToJsonSchema()
+    {
+        var json = """
+        {
+          "model": "gpt-5.5",
+          "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+          "text": {"format": {"type": "json_object"}, "verbosity": "low"}
+        }
+        """;
+        var transit = new OpenAiResponsesInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new OpenAiResponsesOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var text = doc.RootElement.GetProperty("text");
+        text.GetProperty("verbosity").GetString().Should().Be("low");
+        var format = text.GetProperty("format");
+        format.GetProperty("type").GetString().Should().Be("json_schema");
+        format.GetProperty("strict").GetBoolean().Should().BeFalse();
+        format.GetProperty("schema").GetProperty("additionalProperties").GetBoolean().Should().BeTrue();
+    }
+
+    /// <summary>
+    /// A compliant native Responses <c>json_object</c> request (input mentions
+    /// "json") must survive the round trip untouched — the encoder only
+    /// rewrites requests that would 400 upstream.
+    /// </summary>
+    [Fact]
+    public void OpenAiResponses_TextFormatJsonObject_WithJsonInInput_RoundTrip_Unchanged()
+    {
+        var json = """
+        {
+          "model": "gpt-5.5",
+          "input": [{"role": "user", "content": [{"type": "input_text", "text": "give me JSON"}]}],
+          "text": {"format": {"type": "json_object"}, "verbosity": "low"}
+        }
+        """;
+        var transit = new OpenAiResponsesInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new OpenAiResponsesOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var text = doc.RootElement.GetProperty("text");
+        text.GetProperty("verbosity").GetString().Should().Be("low");
+        var format = text.GetProperty("format");
+        format.GetProperty("type").GetString().Should().Be("json_object");
+        format.TryGetProperty("schema", out _).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// An explicit <c>json_schema</c> text.format must pass through untouched —
+    /// the upgrade only targets legacy <c>json_object</c>.
+    /// </summary>
+    [Fact]
+    public void OpenAiResponses_TextFormatJsonSchema_RoundTrip_Unchanged()
+    {
+        var json = """
+        {
+          "model": "gpt-5.5",
+          "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+          "text": {"format": {"type": "json_schema", "name": "animal", "strict": true,
+                   "schema": {"type": "object", "properties": {"name": {"type": "string"}}}}}
+        }
+        """;
+        var transit = new OpenAiResponsesInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new OpenAiResponsesOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var format = doc.RootElement.GetProperty("text").GetProperty("format");
+        format.GetProperty("type").GetString().Should().Be("json_schema");
+        format.GetProperty("name").GetString().Should().Be("animal");
+        format.GetProperty("strict").GetBoolean().Should().BeTrue();
+    }
+
+    /// <summary>
     /// P1-7: built-in Gemini tools (<c>googleSearch</c>, <c>urlContext</c>,
     /// <c>codeExecution</c>) must round-trip through the decoder/encoder pair
     /// even when they aren't <c>functionDeclarations</c>.

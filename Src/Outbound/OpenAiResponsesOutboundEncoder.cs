@@ -111,11 +111,11 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         // OpenAI Chat-shaped response_format hints into the Responses shape so
         // Chat → Responses routes preserve JSON-mode/JSON-schema constraints.
         if (request.Hints.TryGetValue("openai.responses.text", out var tx) && tx is JsonElement txEl)
-            body["text"] = txEl;
+            body["text"] = UpgradeJsonObjectTextConfig(txEl, nonSystem);
         else if (request.Hints.TryGetValue(OpenAiHints.ResponseFormat, out var rf) && rf is JsonElement rfEl
                  && rfEl.ValueKind == JsonValueKind.Object)
         {
-            var textFormat = ConvertResponseFormatToTextFormat(rfEl);
+            var textFormat = ConvertResponseFormatToTextFormat(rfEl, nonSystem);
             if (textFormat != null) body["text"] = new { format = textFormat };
         }
         if (request.Hints.TryGetValue(OpenAiHints.ParallelToolCalls, out var ptc) && ptc is bool ptcVal)
@@ -327,14 +327,28 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
     /// Converts a Chat-Completions-shaped <c>response_format</c>
     /// (<c>{type:"json_schema", json_schema:{schema, name?, strict?}}</c> or
     /// <c>{type:"json_object"}</c>) into the Responses-API
-    /// <c>text.format</c> shape (<c>{type:"json_schema", schema, name?, strict?}</c>
-    /// or <c>{type:"json_object"}</c>). Returns null when the input shape is
-    /// unrecognised; the caller falls back to omitting the field.
+    /// <c>text.format</c> shape (<c>{type:"json_schema", schema, name?, strict?}</c>).
+    /// Returns null when the input shape is unrecognised; the caller falls
+    /// back to omitting the field.
+    /// <para><c>json_object</c> is a valid Responses text.format and passes
+    /// through as-is when the request would be accepted upstream. Legacy JSON
+    /// mode, however, requires the word "json" to appear in the input messages
+    /// (upstream 400s otherwise — instructions don't count), a rule callers
+    /// routed cross-protocol routinely violate. Only in that doomed case is it
+    /// upgraded to an equivalent permissive <c>json_schema</c>: Structured
+    /// Outputs has no such requirement and still guarantees a valid JSON
+    /// object.</para>
     /// </summary>
-    private static object? ConvertResponseFormatToTextFormat(JsonElement rf)
+    private static object? ConvertResponseFormatToTextFormat(JsonElement rf,
+        IList<ChatMessage> inputMessages)
     {
         var type = rf.TryGetProperty("type", out var tEl) ? tEl.GetString() : null;
-        if (type == "json_object") return new { type = "json_object" };
+        if (type == "json_object")
+        {
+            return InputMentionsJson(inputMessages)
+                ? new Dictionary<string, object?> { ["type"] = "json_object" }
+                : PermissiveJsonSchemaFormat();
+        }
         if (type == "json_schema"
             && rf.TryGetProperty("json_schema", out var js)
             && js.ValueKind == JsonValueKind.Object)
@@ -352,6 +366,60 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         }
         return null;
     }
+
+    /// <summary>
+    /// Permissive Structured-Outputs format equivalent to legacy JSON mode:
+    /// any JSON object is accepted (<c>strict:false</c> +
+    /// <c>additionalProperties:true</c>), but without JSON mode's "input must
+    /// contain the word 'json'" precondition.
+    /// </summary>
+    private static object PermissiveJsonSchemaFormat() => new Dictionary<string, object?>
+    {
+        ["type"] = "json_schema",
+        ["name"] = "json_object",
+        ["strict"] = false,
+        ["schema"] = new Dictionary<string, object?>
+        {
+            ["type"] = "object",
+            ["additionalProperties"] = true,
+        },
+    };
+
+    /// <summary>
+    /// Same upgrade for native Responses callers: when the passthrough
+    /// <c>text</c> config carries <c>format:{type:"json_object"}</c> and the
+    /// input messages don't satisfy JSON mode's "must contain the word 'json'"
+    /// precondition (the request would 400 upstream), swap the format for the
+    /// permissive json_schema while keeping sibling fields (e.g.
+    /// <c>verbosity</c>) intact. Compliant requests pass through untouched.
+    /// </summary>
+    private static object UpgradeJsonObjectTextConfig(JsonElement textCfg,
+        IList<ChatMessage> inputMessages)
+    {
+        if (!textCfg.TryGetProperty("format", out var fmt)
+            || fmt.ValueKind != JsonValueKind.Object
+            || !fmt.TryGetProperty("type", out var fmtType)
+            || fmtType.GetString() != "json_object"
+            || InputMentionsJson(inputMessages))
+        {
+            return textCfg;
+        }
+
+        var rebuilt = new Dictionary<string, object?>();
+        foreach (var prop in textCfg.EnumerateObject())
+            rebuilt[prop.Name] = prop.Name == "format" ? PermissiveJsonSchemaFormat() : prop.Value;
+        return rebuilt;
+    }
+
+    /// <summary>
+    /// Mirrors the upstream JSON-mode precondition: the string "json"
+    /// (case-insensitive) must appear in the input message text. Instructions
+    /// / system text deliberately don't count — the upstream check ignores
+    /// them too.
+    /// </summary>
+    private static bool InputMentionsJson(IList<ChatMessage> inputMessages) =>
+        inputMessages.Any(m => m.Contents.OfType<TextContent>()
+            .Any(t => t.Text?.Contains("json", StringComparison.OrdinalIgnoreCase) == true));
 
     private static object SerializeToolResult(object? result) => result switch
     {
