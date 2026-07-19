@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Gateway.Shared\Gateway.Shared.csproj" />
+    <ProjectReference Include="..\..\..\OneApi.Gateway.Shared\Gateway.Shared.csproj" />
     <!-- Raw SDK projects only — Channel.* wraps Provider.Shared which would create a cycle in Phase 3 -->
     <ProjectReference Include="..\..\Channels\SDK\Anthropic\src\Anthropic\Anthropic.csproj" />
     <ProjectReference Include="..\..\Channels\SDK\GenAi\Google.GenAI\Google.GenAI.csproj" />
