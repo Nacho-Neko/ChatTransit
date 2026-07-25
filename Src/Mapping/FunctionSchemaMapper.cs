@@ -39,6 +39,45 @@ public static class FunctionSchemaMapper
 
     public static JsonElement? ToAnthropic(JsonElement? schema) => schema;
 
+    // Keywords the legacy OpenAPI-subset `parameters` field cannot express. When a
+    // schema uses any of these, <see cref="NormaliseForGemini"/> would drop them and
+    // collapse referenced subschemas to `{}` — losing type/enum/required. Such
+    // schemas must instead go through Gemini's `parametersJsonSchema` field, which
+    // accepts full JSON Schema (incl. $ref/$defs) and is replacing the legacy field.
+    private static readonly string[] JsonSchemaOnlyKeywords =
+        ["$ref", "$defs", "definitions", "allOf", "if", "then", "else", "unevaluatedProperties"];
+
+    /// <summary>
+    /// True when <paramref name="schema"/> (anywhere in its tree) uses a keyword that
+    /// the legacy Gemini <c>parameters</c> field can't express — meaning it must be
+    /// emitted via <c>parametersJsonSchema</c> to avoid silent data loss. The most
+    /// common trigger is <c>$ref</c>/<c>$defs</c>, which every schema generator
+    /// (Zod, Pydantic, MCP) emits for nested/reused types.
+    /// </summary>
+    public static bool RequiresJsonSchema(JsonElement? schema)
+        => schema is { } s && s.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+           && ContainsJsonSchemaOnlyKeyword(s);
+
+    private static bool ContainsJsonSchemaOnlyKeyword(JsonElement el)
+    {
+        switch (el.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var p in el.EnumerateObject())
+                {
+                    if (Array.IndexOf(JsonSchemaOnlyKeywords, p.Name) >= 0) return true;
+                    if (ContainsJsonSchemaOnlyKeyword(p.Value)) return true;
+                }
+                return false;
+            case JsonValueKind.Array:
+                foreach (var item in el.EnumerateArray())
+                    if (ContainsJsonSchemaOnlyKeyword(item)) return true;
+                return false;
+            default:
+                return false;
+        }
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private static void NormaliseForGemini(Dictionary<string, object?> node)

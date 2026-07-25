@@ -43,12 +43,7 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
         var toolEntries = new List<object>();
         if (request.FunctionTools is { Count: > 0 })
         {
-            var decls = request.FunctionTools.Select(t => (object)new
-            {
-                name = t.Name,
-                description = t.Description,
-                parameters = FunctionSchemaMapper.ToGemini(t.ParametersSchema)
-            }).ToList();
+            var decls = request.FunctionTools.Select(t => BuildFunctionDeclaration(t)).ToList();
             toolEntries.Add(new { functionDeclarations = decls });
         }
         if (request.Hints.TryGetValue(GeminiHints.BuiltinTools, out var bt)
@@ -82,6 +77,29 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static object BuildFunctionDeclaration(TransitFunctionToolDef t)
+    {
+        // Schemas using $ref/$defs/allOf/if-then-else can't be expressed in the
+        // legacy OpenAPI-subset `parameters` field — the sanitizer would drop the
+        // referenced subschemas and collapse them to `{}`, losing type/enum/required.
+        // Route those through `parametersJsonSchema`, which accepts full JSON Schema.
+        if (FunctionSchemaMapper.RequiresJsonSchema(t.ParametersSchema))
+        {
+            return new
+            {
+                name = t.Name,
+                description = t.Description,
+                parametersJsonSchema = t.ParametersSchema
+            };
+        }
+        return new
+        {
+            name = t.Name,
+            description = t.Description,
+            parameters = FunctionSchemaMapper.ToGemini(t.ParametersSchema)
+        };
+    }
 
     private static string? FlattenSystem(IList<ChatMessage> systemMessages)
     {
@@ -382,7 +400,13 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
                 && jsObj.TryGetProperty("schema", out var schemaEl))
             {
                 gc["responseMimeType"] = "application/json";
-                gc["responseSchema"] = FunctionSchemaMapper.ToGemini(schemaEl);
+                // Same $ref/$defs loss as function tools: route full-JSON-Schema
+                // response formats through responseJsonSchema instead of the
+                // OpenAPI-subset responseSchema (the two are mutually exclusive).
+                if (FunctionSchemaMapper.RequiresJsonSchema(schemaEl))
+                    gc["responseJsonSchema"] = schemaEl.Clone();
+                else
+                    gc["responseSchema"] = FunctionSchemaMapper.ToGemini(schemaEl);
             }
             else if (rfType == "json_object")
             {
