@@ -1,10 +1,23 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project>
+  <!-- Isolate from the host repo's Directory.Build.props/targets so this pure
+       library builds identically no matter which platform embeds it (OneApi,
+       Meeko.Demux, or standalone). Must be set before the SDK import, which is
+       why the SDK is referenced via the <Sdk> element rather than the Project
+       attribute. -->
+  <PropertyGroup>
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+  </PropertyGroup>
+
+  <Sdk Name="Microsoft.NET.Sdk" />
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <NoWarn>$(NoWarn);OPENAI001;OPENAI002;MEAI001</NoWarn>
+    <IsPackable>false</IsPackable>
   </PropertyGroup>
 
   <!-- ChatTransit is a pure protocol translator: byte[]/TransitRequest in, byte[]/
@@ -21,7 +34,16 @@
        ProviderRequest — lives in OneApi's CompatProvider instead, the only consumer that
        needs it. -->
 
-  <ItemGroup>
+  <!-- Dual-mode package versions: hosts with central package management (e.g.
+       Meeko.Demux) pin versions in their Directory.Packages.props; hosts without
+       it (OneApi, standalone) get the inline versions below. -->
+  <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' == 'true'">
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(ManagePackageVersionsCentrally)' != 'true'">
     <PackageReference Include="MessagePack" Version="3.1.7" />
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
