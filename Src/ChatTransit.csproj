@@ -4,21 +4,27 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <RootNamespace>Gateway.Shared.ChatTransit</RootNamespace>
     <NoWarn>$(NoWarn);OPENAI001;OPENAI002;MEAI001</NoWarn>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\..\..\OneApi.Gateway.Shared\Gateway.Shared.csproj" />
-    <!-- Raw SDK projects only — Channel.* wraps Provider.Shared which would create a cycle in Phase 3 -->
-    <ProjectReference Include="..\..\Channels\SDK\Anthropic\src\Anthropic\Anthropic.csproj" />
-    <ProjectReference Include="..\..\Channels\SDK\GenAi\Google.GenAI\Google.GenAI.csproj" />
-    <ProjectReference Include="..\..\Channels\SDK\OpenAi\OpenAI\src\OpenAI.csproj" />
-  </ItemGroup>
+  <!-- ChatTransit is a pure protocol translator: byte[]/TransitRequest in, byte[]/
+       StreamingChunkDto out. It has zero ProjectReferences — no Gateway.Shared
+       (NATS/Consul/Redis/SemanticKernel dispatch plumbing), no OneApi.Common, no raw
+       provider SDK project. StreamingChunkDto/StreamingContentType and the usage-key
+       constants it needs are its own types (see StreamingChunkDto.cs,
+       Mapping/ChatTransitUsageKeys.cs) rather than borrowed from a sibling project, so
+       this library never depends on anything about the platform it happens to be
+       embedded in. Consumers (OneApi's CompatWorker, Demux.Gateway's edge controllers)
+       own the small field-by-field mapping to their own platform DTO at the integration
+       boundary — that mapping is platform plumbing, not protocol translation.
+       ChatTransitTaskTranscoder — the one piece that used to bridge to Gateway.Shared's
+       ProviderRequest — lives in OneApi's CompatProvider instead, the only consumer that
+       needs it. -->
 
   <ItemGroup>
     <PackageReference Include="MessagePack" Version="3.1.7" />
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" Version="10.6.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.8" />
   </ItemGroup>
 
 </Project>
