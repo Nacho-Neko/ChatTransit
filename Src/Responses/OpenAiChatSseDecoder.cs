@@ -97,6 +97,27 @@ public static class OpenAiChatSseDecoder
 
     private static IEnumerable<StreamingChunkDto> DecodeChunk(JsonElement root)
     {
+        // An upstream that fails after committing to 200 OK reports it as a mid-stream
+        // `data: {"error": {...}}` frame rather than an HTTP status, so it has to be
+        // decoded here — as the Anthropic and Responses decoders already do — or the
+        // stream just ends and reads as a short but successful answer.
+        if (root.TryGetProperty("error", out var errorEl))
+        {
+            var isObject = errorEl.ValueKind == JsonValueKind.Object;
+            var message = isObject
+                ? UsageDictBuilder.GetString(errorEl, "message")
+                : UsageDictBuilder.GetString(root, "error");
+            yield return new StreamingChunkDto
+            {
+                ContentType = StreamingContentType.Usage,
+                Error = message ?? errorEl.ToString(),
+                ErrorCode = isObject
+                    ? UsageDictBuilder.GetString(errorEl, "type") ?? UsageDictBuilder.GetString(errorEl, "code")
+                    : null,
+            };
+            yield break;
+        }
+
         if (root.TryGetProperty("usage", out var usageTopEl) && usageTopEl.ValueKind == JsonValueKind.Object)
         {
             var usage = ReadChatUsage(usageTopEl);
