@@ -1,5 +1,5 @@
-using Gateway.Shared.ChatTransit.Inbound;
-using Gateway.Shared.ChatTransit.Hints;
+﻿using ChatTransit.Inbound;
+using ChatTransit.Hints;
 using Microsoft.Extensions.AI;
 
 namespace ChatTransit.Tests.Decoders;

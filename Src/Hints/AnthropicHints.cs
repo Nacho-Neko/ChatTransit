@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit.Hints;
+﻿namespace ChatTransit.Hints;
 
 /// <summary>
 /// Keys for Anthropic-specific metadata stored in <see cref="TransitRequest.Hints"/>

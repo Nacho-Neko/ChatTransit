@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Outbound;
+namespace ChatTransit.Outbound;
 
 /// <summary>
 /// Encodes a <see cref="TransitRequest"/> into Gemini <c>generateContent</c> JSON bytes.

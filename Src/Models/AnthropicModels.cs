@@ -1,7 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Gateway.Shared.ChatTransit.Anthropic;
+namespace ChatTransit.Anthropic;
 
 // ── Request models ────────────────────────────────────────────────────────────
 
@@ -65,6 +65,9 @@ public class AnthropicMessagesResponse
     [JsonPropertyName("content")] public List<object> Content { get; set; } = [];
     [JsonPropertyName("model")] public string Model { get; set; } = "";
     [JsonPropertyName("stop_reason")] public string? StopReason { get; set; }
+    // Anthropic responses always include stop_sequence (null unless a custom stop
+    // sequence triggered the stop). Emit it even when null for spec conformance.
+    [JsonPropertyName("stop_sequence")] public string? StopSequence { get; set; }
     [JsonPropertyName("usage")] public AnthropicUsage Usage { get; set; } = new();
 }
 

@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Outbound;
+namespace ChatTransit.Outbound;
 
 /// <summary>
 /// Encodes a <see cref="TransitRequest"/> into Anthropic Messages API JSON bytes.
@@ -138,6 +138,12 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
             };
         }
 
+        // Extended thinking is only compatible with tool_choice auto / none — the
+        // API rejects any / tool while thinking is enabled. Downgrade a forced
+        // choice to {type:"auto"} so the two are never emitted together.
+        if (isThinking && body.TryGetValue("tool_choice", out var chosenTc) && chosenTc != null)
+            body["tool_choice"] = DowngradeForcedToolChoiceForThinking(chosenTc);
+
         // ── Hint passthrough (metadata / container / service_tier) ────────────
         if (request.Hints.TryGetValue(AnthropicHints.Metadata, out var md) && md is JsonElement mdEl)
             body["metadata"] = mdEl;
@@ -169,12 +175,48 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
             effort = tlStr;
         return effort?.ToLowerInvariant() switch
         {
-            "minimal" or "none" => 1024,
+            // "none" explicitly means "disable reasoning" — it must NOT turn thinking
+            // on (returns null so no budget/thinking config is injected and temperature
+            // is not stripped). "minimal" still maps to a small budget.
+            "minimal" => 1024,
             "low" => 4096,
             "medium" => 8192,
             "high" => 16384,
             _ => null
         };
+    }
+
+    /// <summary>
+    /// Extended thinking only supports <c>tool_choice</c> auto / none. When thinking
+    /// is active, a forced <c>any</c> / <c>tool</c> choice is downgraded to
+    /// <c>{type:"auto"}</c> (preserving <c>disable_parallel_tool_use</c> if set).
+    /// Any other choice (auto / none / already-valid) is returned unchanged.
+    /// </summary>
+    private static object DowngradeForcedToolChoiceForThinking(object toolChoice)
+    {
+        string? type = null;
+        bool? disableParallel = null;
+
+        if (toolChoice is JsonElement je && je.ValueKind == JsonValueKind.Object)
+        {
+            if (je.TryGetProperty("type", out var t)) type = t.GetString();
+            if (je.TryGetProperty("disable_parallel_tool_use", out var dp)
+                && (dp.ValueKind == JsonValueKind.True || dp.ValueKind == JsonValueKind.False))
+                disableParallel = dp.GetBoolean();
+        }
+        else if (toolChoice is IDictionary<string, object?> d)
+        {
+            type = d.TryGetValue("type", out var tv) ? tv as string : null;
+            if (d.TryGetValue("disable_parallel_tool_use", out var dpv) && dpv is bool b)
+                disableParallel = b;
+        }
+
+        if (type is not ("any" or "tool"))
+            return toolChoice;
+
+        var result = new Dictionary<string, object?> { ["type"] = "auto" };
+        if (disableParallel.HasValue) result["disable_parallel_tool_use"] = disableParallel.Value;
+        return result;
     }
 
     private static object? ProjectToolMode(ChatToolMode mode, bool disableParallel)
@@ -206,10 +248,10 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         {
             var role = msg.Role == ChatRole.Assistant ? "assistant" : "user";
             var blocks = BuildContent(msg.Contents);
-            if (blocks.Count == 0) blocks.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "text", ["text"] = "."
-            });
+            // A message with no renderable content blocks is dropped rather than
+            // padded with a "." placeholder, which would alter the conversation's
+            // semantics. (Anthropic requires each message's content to be non-empty.)
+            if (blocks.Count == 0) continue;
 
             // Use string shorthand only when there's a single plain text block
             // AND no cache_control / other metadata on it.
@@ -268,11 +310,12 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         }
 
         var text = ThinkingMapper.GetThinkingText(content) ?? "";
-        // Recover the signature from any protocol carrier: a cross-protocol caller
-        // (OpenAI/Gemini client) routed onto an Anthropic-native backend replays the
-        // blob under its own key, but Anthropic requires it as `signature` or it
-        // 400s with "messages.N.content.0.thinking.signature: Field required".
-        var sig = ThinkingMapper.GetAnySignature(content);
+        // Recover the signature. Since the target backend is Anthropic, prefer the
+        // Anthropic-native signature; only fall back to any other protocol carrier
+        // (Gemini/OpenAI) when it is absent. Anthropic requires it as `signature`
+        // or it 400s with "messages.N.content.0.thinking.signature: Field required".
+        var sig = ThinkingMapper.GetAnthropicSignature(content)
+                  ?? ThinkingMapper.GetAnySignature(content);
         var block = new Dictionary<string, object?>
         {
             ["type"] = "thinking",

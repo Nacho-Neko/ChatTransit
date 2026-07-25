@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit.Mapping;
+﻿namespace ChatTransit.Mapping;
 
 /// <summary>
 /// Maps stop / finish-reason strings between the four supported protocol vocabularies
@@ -142,7 +142,14 @@ public static class StopReasonMapper
     public static string DeriveOpenAiFinishReason(string? upstreamFinishReason, bool hadToolCalls)
     {
         if (!string.IsNullOrEmpty(upstreamFinishReason))
-            return ToOpenAi(upstreamFinishReason);
+        {
+            var mapped = ToOpenAi(upstreamFinishReason);
+            // Gemini (and any provider that has no dedicated tool-call stop reason)
+            // reports "stop"/"STOP" even when the turn ends in a tool call. OpenAI
+            // clients drive their agent loop off finish_reason, so a response that
+            // contains tool calls must surface "tool_calls".
+            return hadToolCalls && mapped == "stop" ? "tool_calls" : mapped;
+        }
         return hadToolCalls ? "tool_calls" : "stop";
     }
 
@@ -150,7 +157,12 @@ public static class StopReasonMapper
     public static string DeriveAnthropicStopReason(string? upstreamFinishReason, bool hadToolCalls)
     {
         if (!string.IsNullOrEmpty(upstreamFinishReason))
-            return ToAnthropic(upstreamFinishReason);
+        {
+            var mapped = ToAnthropic(upstreamFinishReason);
+            // Same rationale as DeriveOpenAiFinishReason: a tool-call turn must map
+            // to "tool_use" even when the upstream reported a plain end-of-turn.
+            return hadToolCalls && mapped == "end_turn" ? "tool_use" : mapped;
+        }
         return hadToolCalls ? "tool_use" : "end_turn";
     }
 

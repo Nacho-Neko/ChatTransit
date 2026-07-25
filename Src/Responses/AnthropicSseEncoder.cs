@@ -1,11 +1,9 @@
-using Gateway.Shared.ChatTransit.Mapping;
-using Gateway.Shared.Messaging.Serialization;
-using Gateway.Shared.Providers.Streaming;
+﻿using ChatTransit.Mapping;
 using MessagePack;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Responses;
+namespace ChatTransit.Responses;
 
 /// <summary>
 /// Converts <see cref="StreamingChunkDto"/> events into the Anthropic Messages
@@ -135,7 +133,10 @@ public static class AnthropicSseEncoder
                             hadToolCalls = true;
                         }
 
-                        if (chunk.FunctionArguments != null)
+                        // Only emit input_json_delta when a tool_use block is actually
+                        // open. A stray arguments-only chunk with no open tool_use
+                        // block would otherwise produce a dangling, invalid delta.
+                        if (chunk.FunctionArguments != null && inBlock && currentBlockType == "tool_use")
                         {
                             yield return FormatSse("content_block_delta", new
                             {
@@ -149,6 +150,31 @@ public static class AnthropicSseEncoder
 
                 case StreamingContentType.Thinking:
                     {
+                        // A redacted_thinking block is atomic: it has no deltas, only
+                        // an opaque "data" payload. Emit it as its own start/stop pair
+                        // so the block is rebuilt byte-for-byte for replay.
+                        if (!string.IsNullOrEmpty(chunk.RedactedThinkingData))
+                        {
+                            if (inBlock)
+                            {
+                                FlushSignatureIfThinking(currentBlockType, blockIndex, ref pendingThinkingSignature, out var sig);
+                                if (sig != null) yield return sig;
+                                yield return CloseBlock(blockIndex);
+                                blockIndex++;
+                                inBlock = false;
+                                currentBlockType = "";
+                            }
+                            yield return FormatSse("content_block_start", new
+                            {
+                                type = "content_block_start",
+                                index = blockIndex,
+                                content_block = new { type = "redacted_thinking", data = chunk.RedactedThinkingData }
+                            });
+                            yield return CloseBlock(blockIndex);
+                            blockIndex++;
+                            break;
+                        }
+
                         if (inBlock && currentBlockType != "thinking")
                         {
                             FlushSignatureIfThinking(currentBlockType, blockIndex, ref pendingThinkingSignature, out var sigEvt);
@@ -194,15 +220,15 @@ public static class AnthropicSseEncoder
 
                 case StreamingContentType.Usage when chunk.Usage != null:
                     {
-                        inputTokens = ResolveUsageMonotonic(chunk.Usage, inputTokens, ProviderUsageKeys.InputTokens);
-                        outputTokens = ResolveUsageMonotonic(chunk.Usage, outputTokens, ProviderUsageKeys.OutputTokens);
-                        if (TryGetUsageInt(chunk.Usage, ProviderUsageKeys.CacheCreationInputTokens, out var cacheCreation))
+                        inputTokens = ResolveUsageMonotonic(chunk.Usage, inputTokens, ChatTransitUsageKeys.InputTokens);
+                        outputTokens = ResolveUsageMonotonic(chunk.Usage, outputTokens, ChatTransitUsageKeys.OutputTokens);
+                        if (TryGetUsageInt(chunk.Usage, ChatTransitUsageKeys.CacheCreationInputTokens, out var cacheCreation))
                         {
                             cacheCreationInputTokens = cacheCreation;
                             hasCacheCreationInputTokens = true;
                         }
 
-                        if (TryGetUsageInt(chunk.Usage, ProviderUsageKeys.CacheReadInputTokens, out var cacheRead))
+                        if (TryGetUsageInt(chunk.Usage, ChatTransitUsageKeys.CacheReadInputTokens, out var cacheRead))
                         {
                             cacheReadInputTokens = cacheRead;
                             hasCacheReadInputTokens = true;
@@ -277,6 +303,15 @@ public static class AnthropicSseEncoder
             {
                 case StreamingContentType.Thinking:
                     FlushText(contentBlocks, contentBuffer);
+                    // Redacted blocks are atomic and must not merge into the thinking
+                    // text buffer — flush any pending thinking first, then emit as-is.
+                    if (!string.IsNullOrEmpty(chunk.RedactedThinkingData))
+                    {
+                        FlushThinking(contentBlocks, thinkingBuffer, thinkingSignature);
+                        thinkingSignature = null;
+                        contentBlocks.Add(new { type = "redacted_thinking", data = chunk.RedactedThinkingData });
+                        break;
+                    }
                     if (chunk.Text != null) thinkingBuffer.Append(chunk.Text);
                     if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
                         thinkingSignature = chunk.ReasoningSignature;
@@ -306,15 +341,15 @@ public static class AnthropicSseEncoder
                     break;
 
                 case StreamingContentType.Usage when chunk.Usage != null:
-                    inputTokens = ResolveUsageMonotonic(chunk.Usage, inputTokens, ProviderUsageKeys.InputTokens);
-                    outputTokens = ResolveUsageMonotonic(chunk.Usage, outputTokens, ProviderUsageKeys.OutputTokens);
-                    if (TryGetUsageInt(chunk.Usage, ProviderUsageKeys.CacheCreationInputTokens, out var cc))
+                    inputTokens = ResolveUsageMonotonic(chunk.Usage, inputTokens, ChatTransitUsageKeys.InputTokens);
+                    outputTokens = ResolveUsageMonotonic(chunk.Usage, outputTokens, ChatTransitUsageKeys.OutputTokens);
+                    if (TryGetUsageInt(chunk.Usage, ChatTransitUsageKeys.CacheCreationInputTokens, out var cc))
                     {
                         cacheCreationInputTokens = cc;
                         hasCacheCreationInputTokens = true;
                     }
 
-                    if (TryGetUsageInt(chunk.Usage, ProviderUsageKeys.CacheReadInputTokens, out var cr))
+                    if (TryGetUsageInt(chunk.Usage, ChatTransitUsageKeys.CacheReadInputTokens, out var cr))
                     {
                         cacheReadInputTokens = cr;
                         hasCacheReadInputTokens = true;

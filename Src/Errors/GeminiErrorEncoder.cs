@@ -1,8 +1,8 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Gemini;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Gemini;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Errors;
+namespace ChatTransit.Errors;
 
 /// <summary>
 /// Builds Gemini-format error response objects and SSE error events.

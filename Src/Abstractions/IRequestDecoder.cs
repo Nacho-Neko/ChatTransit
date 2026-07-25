@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit.Abstractions;
+﻿namespace ChatTransit.Abstractions;
 
 /// <summary>
 /// Decodes raw request bytes in a specific wire protocol into a <see cref="TransitRequest"/>.

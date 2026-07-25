@@ -1,6 +1,4 @@
-using Gateway.Shared.Messaging.Serialization;
-
-namespace Gateway.Shared.ChatTransit.Abstractions;
+﻿namespace ChatTransit.Abstractions;
 
 /// <summary>
 /// Aggregates a list of <see cref="StreamingChunkDto"/> chunks into a single
@@ -14,6 +12,10 @@ public interface IResponseCollector
     /// <summary>
     /// Collects <paramref name="chunks"/> into a non-streaming JSON-serialisable response.
     /// The returned object is passed directly to the HTTP response body serialiser.
+    /// <see cref="IReadOnlyList{T}"/> (not <c>List</c>) so callers holding a
+    /// <c>List</c> of a <see cref="StreamingChunkDto"/> subtype — e.g. a caller
+    /// that only sees its own transport-level DTO subclass — can pass it straight
+    /// through without a copy.
     /// </summary>
-    object Collect(IList<StreamingChunkDto> chunks, string model);
+    object Collect(IReadOnlyList<StreamingChunkDto> chunks, string model);
 }

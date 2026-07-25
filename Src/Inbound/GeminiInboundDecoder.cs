@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Inbound;
+namespace ChatTransit.Inbound;
 
 /// <summary>
 /// Decodes Google Gemini <c>generateContent</c> JSON into a <see cref="TransitRequest"/>.
@@ -83,6 +83,11 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
         if (!contentEl.TryGetProperty("parts", out var parts) || parts.ValueKind != JsonValueKind.Array)
             return contents;
 
+        // Tracks how many id-less functionCalls we've seen for each name so that
+        // parallel calls to the same function get distinct synthesized CallIds
+        // (Gemini 1.5/2 omit ids; falling back to name alone collides).
+        var noIdCallCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+
         foreach (var part in parts.EnumerateArray())
         {
             // Thought part ? may carry a thoughtSignature that MUST be returned
@@ -109,10 +114,27 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                     foreach (var p2 in argsEl.EnumerateObject())
                         ((Dictionary<string, object?>)args)[p2.Name] = p2.Value.Clone();
                 }
-                // CallId precedence: explicit id (Gemini 3) > name (Gemini 1.5/2 fallback).
-                // We also record whether the id was actually present so the encoder
-                // knows whether to emit it on Gemini ? Gemini round-trip.
-                var callId = !string.IsNullOrEmpty(id) ? id! : name;
+                // CallId precedence: explicit id (Gemini 3) > synthesized-unique name
+                // (Gemini 1.5/2 fallback). We also record whether the id was actually
+                // present so the encoder knows whether to emit it on Gemini ? Gemini
+                // round-trip. For id-less calls the first occurrence keeps the plain
+                // name; duplicates get a "name_N" suffix so parallel same-name calls
+                // never share a CallId (which would break cross-protocol pairing).
+                string callId;
+                if (!string.IsNullOrEmpty(id))
+                {
+                    callId = id!;
+                }
+                else if (noIdCallCounts.TryGetValue(name, out var seen))
+                {
+                    callId = $"{name}_{seen}";
+                    noIdCallCounts[name] = seen + 1;
+                }
+                else
+                {
+                    callId = name;
+                    noIdCallCounts[name] = 1;
+                }
                 var fcc = new FunctionCallContent(callId, name, args);
                 if (!string.IsNullOrEmpty(id))
                 {
@@ -156,7 +178,16 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
             // Plain text part
             if (part.TryGetProperty("text", out var textEl) && textEl.GetString() is { Length: > 0 } txt)
             {
-                contents.Add(new TextContent(txt));
+                var textContent = new TextContent(txt);
+                // Gemini 3 can attach a thoughtSignature to an ordinary text part;
+                // preserve it on the content so the outbound encoder can echo it
+                // back for thinking continuity.
+                if (part.TryGetProperty("thoughtSignature", out var txtTs)
+                    && txtTs.GetString() is { Length: > 0 } txtSig)
+                {
+                    ThinkingMapper.SetGeminiThoughtSignature(textContent, txtSig);
+                }
+                contents.Add(textContent);
                 continue;
             }
 
@@ -167,7 +198,17 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                 var data = inlineData.TryGetProperty("data", out var d) ? d.GetString() ?? "" : "";
                 if (data.Length > 0)
                 {
-                    var bytes = Convert.FromBase64String(data);
+                    byte[] bytes;
+                    try
+                    {
+                        bytes = Convert.FromBase64String(data);
+                    }
+                    catch (FormatException)
+                    {
+                        // Malformed base64 would otherwise bubble up as a 500.
+                        // Drop the offending part and keep decoding the rest.
+                        continue;
+                    }
                     var dc = new DataContent(bytes, mimeType);
                     if (part.TryGetProperty("videoMetadata", out var vm) && vm.ValueKind == JsonValueKind.Object)
                     {

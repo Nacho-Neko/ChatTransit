@@ -1,8 +1,8 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Anthropic;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Anthropic;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Errors;
+namespace ChatTransit.Errors;
 
 /// <summary>
 /// Builds Anthropic-format error response objects and SSE error events.
@@ -66,10 +66,27 @@ public sealed class AnthropicErrorEncoder : IErrorEncoder
 
     // ── Mapping ───────────────────────────────────────────────────────────────
 
+    // Anthropic's official error `type` vocabulary. A provider-original type is only
+    // adopted when it belongs to this set; otherwise (e.g. OpenAI's
+    // insufficient_quota / context_length_exceeded) we fall back to the HTTP-status
+    // mapping so the Anthropic error envelope stays spec-conformant.
+    private static readonly HashSet<string> AnthropicErrorTypes = new(StringComparer.Ordinal)
+    {
+        "invalid_request_error",
+        "authentication_error",
+        "permission_error",
+        "not_found_error",
+        "request_too_large",
+        "rate_limit_error",
+        "api_error",
+        "overloaded_error",
+    };
+
     private static string MapErrorType(TransitError error)
     {
-        // Prefer the provider-original type when present and recognised.
-        if (!string.IsNullOrEmpty(error.ProviderErrorType))
+        // Prefer the provider-original type only when it is a recognised Anthropic type.
+        if (!string.IsNullOrEmpty(error.ProviderErrorType)
+            && AnthropicErrorTypes.Contains(error.ProviderErrorType!))
             return error.ProviderErrorType!;
 
         return error.StatusCode switch

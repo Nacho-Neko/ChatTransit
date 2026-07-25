@@ -1,9 +1,8 @@
-using Gateway.Shared.ChatTransit.Inbound;
-using Gateway.Shared.ChatTransit.Mapping;
-using Gateway.Shared.ChatTransit.Outbound;
-using Gateway.Shared.ChatTransit.Responses;
-using Gateway.Shared.Messaging.Serialization;
-using Gateway.Shared.Providers.Streaming;
+﻿using ChatTransit;
+using ChatTransit.Inbound;
+using ChatTransit.Mapping;
+using ChatTransit.Outbound;
+using ChatTransit.Responses;
 using System.Text;
 using System.Text.Json;
 

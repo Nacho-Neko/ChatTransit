@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit.Hints;
+﻿namespace ChatTransit.Hints;
 
 /// <summary>
 /// Keys for OpenAI-specific metadata stored in <see cref="TransitRequest.Hints"/>
@@ -74,6 +74,40 @@ public static class OpenAiHints
     public const string SafetyIdentifier = "openai.safety_identifier";
 
     /// <summary>
+    /// Chat Completions <c>store</c> flag. Value: <c>JsonElement</c> (boolean).
+    /// </summary>
+    public const string Store = "openai.store";
+
+    /// <summary>
+    /// Chat Completions <c>metadata</c> object. Value: <c>JsonElement</c>.
+    /// </summary>
+    public const string Metadata = "openai.metadata";
+
+    /// <summary>
+    /// Chat Completions <c>verbosity</c> (<c>"low"|"medium"|"high"</c>) for gpt-5.
+    /// Value: <c>JsonElement</c> (string).
+    /// </summary>
+    public const string Verbosity = "openai.verbosity";
+
+    /// <summary>
+    /// Chat Completions <c>modalities</c> array (e.g. <c>["text","audio"]</c>).
+    /// Value: <c>JsonElement</c> (array).
+    /// </summary>
+    public const string Modalities = "openai.modalities";
+
+    /// <summary>
+    /// Chat Completions <c>prediction</c> object (predicted outputs).
+    /// Value: <c>JsonElement</c>.
+    /// </summary>
+    public const string Prediction = "openai.prediction";
+
+    /// <summary>
+    /// Chat Completions <c>web_search_options</c> object.
+    /// Value: <c>JsonElement</c>.
+    /// </summary>
+    public const string WebSearchOptions = "openai.web_search_options";
+
+    /// <summary>
     /// <c>reasoning</c> object on Responses API requests
     /// (<c>{effort:"low|medium|high", summary:"auto|concise|detailed"}</c>).
     /// Value: <c>JsonElement</c>.
@@ -136,6 +170,33 @@ public static class OpenAiHints
     /// Value: <c>List&lt;JsonElement&gt;</c>.
     /// </summary>
     public const string ResponsesPassthroughItems = "openai.responses.passthrough_items";
+
+    /// <summary>
+    /// Responses API <c>prompt</c> object (prompt template reference).
+    /// Value: <c>JsonElement</c>.
+    /// </summary>
+    public const string ResponsesPrompt = "openai.responses.prompt";
+
+    /// <summary>
+    /// Responses API <c>background</c> flag. Value: <c>JsonElement</c> (boolean).
+    /// </summary>
+    public const string ResponsesBackground = "openai.responses.background";
+
+    /// <summary>
+    /// Responses API <c>max_tool_calls</c> integer. Value: <c>JsonElement</c> (number).
+    /// </summary>
+    public const string ResponsesMaxToolCalls = "openai.responses.max_tool_calls";
+
+    /// <summary>
+    /// Responses API <c>conversation</c> reference (string id or object).
+    /// Value: <c>JsonElement</c>.
+    /// </summary>
+    public const string ResponsesConversation = "openai.responses.conversation";
+
+    /// <summary>
+    /// Responses API <c>stream_options</c> object. Value: <c>JsonElement</c>.
+    /// </summary>
+    public const string ResponsesStreamOptions = "openai.responses.stream_options";
 
     // ── Per-content (AdditionalProperties on AIContent) ───────────────────────
 

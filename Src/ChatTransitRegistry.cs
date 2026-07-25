@@ -1,8 +1,8 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Inbound;
-using Gateway.Shared.ChatTransit.Outbound;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Inbound;
+using ChatTransit.Outbound;
 
-namespace Gateway.Shared.ChatTransit;
+namespace ChatTransit;
 
 /// <summary>
 /// Resolves the (IRequestDecoder, IRequestEncoder) pair needed to convert a request

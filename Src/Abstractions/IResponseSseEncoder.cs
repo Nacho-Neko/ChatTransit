@@ -1,6 +1,4 @@
-using Gateway.Shared.Messaging.Serialization;
-
-namespace Gateway.Shared.ChatTransit.Abstractions;
+﻿namespace ChatTransit.Abstractions;
 
 /// <summary>
 /// Converts a stream of <see cref="StreamingChunkDto"/> values into SSE lines in

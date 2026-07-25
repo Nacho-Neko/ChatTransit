@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Inbound;
+namespace ChatTransit.Inbound;
 
 /// <summary>
 /// Decodes OpenAI Responses API (<c>POST /v1/responses</c>) JSON into a <see cref="TransitRequest"/>.
@@ -162,7 +162,9 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
                 var encrypted = item.TryGetProperty("encrypted_content", out var ec) ? ec.GetString() : null;
                 var itemId = item.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
 
-                // Render the summary as readable text (concatenated summary parts)
+                // Render the summary as readable text (newline-joined summary parts),
+                // then append the raw reasoning `content` parts (also newline-joined)
+                // so no reasoning text is lost when both are present.
                 var sb = new System.Text.StringBuilder();
                 if (summary.HasValue && summary.Value.ValueKind == JsonValueKind.Array)
                 {
@@ -173,6 +175,19 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
                         {
                             if (sb.Length > 0) sb.AppendLine();
                             sb.Append(pt);
+                        }
+                    }
+                }
+                if (item.TryGetProperty("content", out var reasoningContent)
+                    && reasoningContent.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var part in reasoningContent.EnumerateArray())
+                    {
+                        if (part.TryGetProperty("text", out var ctxt)
+                            && ctxt.GetString() is { Length: > 0 } ct)
+                        {
+                            if (sb.Length > 0) sb.AppendLine();
+                            sb.Append(ct);
                         }
                     }
                 }
@@ -232,14 +247,35 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
                 case "input_image":
                 {
                     string? url = null;
+                    string? fileId = null;
                     if (part.TryGetProperty("image_url", out var iu) && iu.GetString() is { Length: > 0 } iuv)
                         url = iuv;
                     else if (part.TryGetProperty("file_id", out var fid) && fid.GetString() is { Length: > 0 } fidv)
+                    {
+                        fileId = fidv;
                         url = $"openai-file://{fidv}";
+                    }
                     if (url != null)
                     {
                         var img = MultimodalContentMapper.FromOpenAiImageUrl(url);
-                        if (img != null) contents.Add(img);
+                        if (img != null)
+                        {
+                            // Tag the file_id form so the outbound encoder can rebuild
+                            // {type:"input_image", file_id:...} instead of an image_url.
+                            if (fileId != null)
+                            {
+                                img.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                                img.AdditionalProperties["transit.openai.file_id"] = fileId;
+                            }
+                            var detail = part.TryGetProperty("detail", out var dtl)
+                                         && dtl.ValueKind == JsonValueKind.String ? dtl.GetString() : null;
+                            if (!string.IsNullOrEmpty(detail))
+                            {
+                                img.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                                img.AdditionalProperties["transit.openai.detail"] = detail;
+                            }
+                            contents.Add(img);
+                        }
                     }
                     break;
                 }
@@ -260,17 +296,29 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
                     string? fileUrl = part.TryGetProperty("file_url", out var fu) ? fu.GetString() : null;
                     string? fileData = part.TryGetProperty("file_data", out var fd) ? fd.GetString() : null;
                     string? filename = part.TryGetProperty("filename", out var fn) ? fn.GetString() : null;
+                    string? detail = part.TryGetProperty("detail", out var dtl)
+                                     && dtl.ValueKind == JsonValueKind.String ? dtl.GetString() : null;
 
                     if (!string.IsNullOrEmpty(fileData))
                     {
+                        // Official shape is a data URI: "data:application/pdf;base64,<b64>".
+                        // Strip the prefix (and recover the real MIME) before decoding —
+                        // feeding the whole URI to FromBase64String throws and silently
+                        // dropped the file. Tolerate a bare base64 payload defensively.
+                        var (b64, mime) = SplitDataUri(fileData, "application/pdf");
                         try
                         {
-                            var bytes = Convert.FromBase64String(fileData);
-                            var dc = new DataContent(bytes, "application/pdf");
+                            var bytes = Convert.FromBase64String(b64);
+                            var dc = new DataContent(bytes, mime);
                             if (!string.IsNullOrEmpty(filename))
                             {
                                 dc.AdditionalProperties ??= new AdditionalPropertiesDictionary();
                                 dc.AdditionalProperties["transit.openai.filename"] = filename;
+                            }
+                            if (!string.IsNullOrEmpty(detail))
+                            {
+                                dc.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                                dc.AdditionalProperties["transit.openai.detail"] = detail;
                             }
                             contents.Add(dc);
                         }
@@ -278,13 +326,21 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
                     }
                     else if (!string.IsNullOrEmpty(fileUrl))
                     {
-                        contents.Add(new UriContent(fileUrl, "application/pdf"));
+                        var uc = new UriContent(fileUrl, "application/pdf");
+                        if (!string.IsNullOrEmpty(detail))
+                        {
+                            uc.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                            uc.AdditionalProperties["transit.openai.detail"] = detail;
+                        }
+                        contents.Add(uc);
                     }
                     else if (!string.IsNullOrEmpty(fileId))
                     {
                         var uc = new UriContent($"openai-file://{fileId}", "application/pdf");
                         uc.AdditionalProperties ??= new AdditionalPropertiesDictionary();
                         uc.AdditionalProperties["transit.openai.file_id"] = fileId;
+                        if (!string.IsNullOrEmpty(detail))
+                            uc.AdditionalProperties["transit.openai.detail"] = detail;
                         contents.Add(uc);
                     }
                     break;
@@ -318,6 +374,26 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
         }
 
         return contents;
+    }
+
+    /// <summary>
+    /// Splits a <c>data:&lt;mime&gt;;base64,&lt;payload&gt;</c> URI into its base64
+    /// payload and MIME type. Falls back to <paramref name="defaultMime"/> and treats
+    /// the input as a bare base64 string when it is not a data URI.
+    /// </summary>
+    private static (string Base64, string Mime) SplitDataUri(string value, string defaultMime)
+    {
+        if (!value.StartsWith("data:", StringComparison.Ordinal))
+            return (value, defaultMime);
+
+        var comma = value.IndexOf(',');
+        if (comma < 0) return (value, defaultMime);
+
+        var header = value[5..comma];           // e.g. "application/pdf;base64"
+        var payload = value[(comma + 1)..];
+        var mime = header.Split(';')[0];
+        if (string.IsNullOrEmpty(mime)) mime = defaultMime;
+        return (payload, mime);
     }
 
     // ── Options ───────────────────────────────────────────────────────────────
@@ -449,6 +525,22 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
 
         if (root.TryGetProperty("metadata", out var md) && md.ValueKind == JsonValueKind.Object)
             hints["openai.responses.metadata"] = md.Clone();
+
+        // Additional request-level passthrough fields captured for OpenAI Responses
+        // fidelity (re-emitted verbatim by the outbound encoder).
+        if (root.TryGetProperty("prompt", out var prompt) && prompt.ValueKind == JsonValueKind.Object)
+            hints[OpenAiHints.ResponsesPrompt] = prompt.Clone();
+        if (root.TryGetProperty("background", out var bg) && bg.ValueKind != JsonValueKind.Null)
+            hints[OpenAiHints.ResponsesBackground] = bg.Clone();
+        if (root.TryGetProperty("max_tool_calls", out var mtc) && mtc.ValueKind == JsonValueKind.Number)
+            hints[OpenAiHints.ResponsesMaxToolCalls] = mtc.Clone();
+        if (root.TryGetProperty("top_logprobs", out var tlp) && tlp.ValueKind == JsonValueKind.Number
+            && tlp.TryGetInt32(out var tlpv))
+            hints[OpenAiHints.TopLogprobs] = tlpv;
+        if (root.TryGetProperty("conversation", out var conv) && conv.ValueKind != JsonValueKind.Null)
+            hints[OpenAiHints.ResponsesConversation] = conv.Clone();
+        if (root.TryGetProperty("stream_options", out var so) && so.ValueKind == JsonValueKind.Object)
+            hints[OpenAiHints.ResponsesStreamOptions] = so.Clone();
     }
 
     private static IDictionary<string, object?>? ParseArguments(string json)

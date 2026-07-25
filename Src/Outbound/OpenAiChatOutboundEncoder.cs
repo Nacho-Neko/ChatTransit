@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Outbound;
+namespace ChatTransit.Outbound;
 
 /// <summary>
 /// Encodes a <see cref="TransitRequest"/> into OpenAI Chat Completions JSON bytes.
@@ -33,7 +33,9 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
         if (opts.Temperature.HasValue)
             body["temperature"] = SamplingScaleMapper.ClampTemperatureForOpenAiScale(opts.Temperature.Value);
         if (opts.TopP.HasValue) body["top_p"] = SamplingScaleMapper.ClampTopP(opts.TopP.Value);
-        if (opts.MaxOutputTokens.HasValue) body["max_tokens"] = opts.MaxOutputTokens.Value;
+        // Use max_completion_tokens (not the deprecated max_tokens): o-series and
+        // gpt-5 models reject max_tokens with a 400; older models accept both.
+        if (opts.MaxOutputTokens.HasValue) body["max_completion_tokens"] = opts.MaxOutputTokens.Value;
         if (opts.FrequencyPenalty.HasValue)
             body["frequency_penalty"] = Math.Clamp(opts.FrequencyPenalty.Value, -2f, 2f);
         if (opts.PresencePenalty.HasValue)
@@ -41,7 +43,13 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
         if (opts.Seed.HasValue) body["seed"] = opts.Seed.Value;
 
         if (opts.StopSequences is { Count: > 0 })
-            body["stop"] = opts.StopSequences.Count == 1 ? (object)opts.StopSequences[0] : opts.StopSequences;
+        {
+            // OpenAI accepts at most 4 stop sequences; trim extras to avoid a 400.
+            var stops = opts.StopSequences.Count > 4
+                ? opts.StopSequences.Take(4).ToList()
+                : opts.StopSequences;
+            body["stop"] = stops.Count == 1 ? (object)stops[0] : stops;
+        }
 
         // Tools
         if (request.FunctionTools is { Count: > 0 })
@@ -59,20 +67,25 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
             }).ToList();
         }
 
-        // tool_choice: prefer the raw OpenAI-shaped hint, otherwise project from IR
-        if (request.Hints.TryGetValue(OpenAiHints.ToolChoice, out var tc) && tc is JsonElement tcEl)
-        {
-            body["tool_choice"] = tcEl;
-        }
-        else if (opts.ToolMode is { } toolMode)
+        // tool_choice: when the canonical ToolMode is present, project from it (the
+        // shape differs between Chat's nested {type,function:{name}} and Responses'
+        // flat {type,name}, so a raw hint captured on one protocol must not leak to
+        // the other). Only fall back to the raw hint when ToolMode is null.
+        if (opts.ToolMode is { } toolMode)
         {
             var projected = ProjectToolMode(toolMode);
             if (projected != null) body["tool_choice"] = projected;
+        }
+        else if (request.Hints.TryGetValue(OpenAiHints.ToolChoice, out var tc) && tc is JsonElement tcEl)
+        {
+            body["tool_choice"] = tcEl;
         }
 
         // Hint passthrough
         if (request.Hints.TryGetValue(OpenAiHints.ResponseFormat, out var rf) && rf is JsonElement rfEl)
             body["response_format"] = rfEl;
+        else if (opts.ResponseFormat is { } respFmt && BuildResponseFormat(respFmt) is { } rfObj)
+            body["response_format"] = rfObj;
         if (request.Hints.TryGetValue(OpenAiHints.ParallelToolCalls, out var ptc) && ptc is bool ptcVal)
             body["parallel_tool_calls"] = ptcVal;
         if (request.Hints.TryGetValue(OpenAiHints.ServiceTier, out var st) && st is string stStr)
@@ -91,6 +104,18 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
             body["prompt_cache_key"] = pckStr;
         if (request.Hints.TryGetValue(OpenAiHints.SafetyIdentifier, out var si) && si is string siStr)
             body["safety_identifier"] = siStr;
+        if (request.Hints.TryGetValue(OpenAiHints.Store, out var store) && store is JsonElement storeEl)
+            body["store"] = storeEl;
+        if (request.Hints.TryGetValue(OpenAiHints.Metadata, out var md) && md is JsonElement mdEl)
+            body["metadata"] = mdEl;
+        if (request.Hints.TryGetValue(OpenAiHints.Verbosity, out var vb) && vb is JsonElement vbEl)
+            body["verbosity"] = vbEl;
+        if (request.Hints.TryGetValue(OpenAiHints.Modalities, out var mod) && mod is JsonElement modEl)
+            body["modalities"] = modEl;
+        if (request.Hints.TryGetValue(OpenAiHints.Prediction, out var pred) && pred is JsonElement predEl)
+            body["prediction"] = predEl;
+        if (request.Hints.TryGetValue(OpenAiHints.WebSearchOptions, out var wso) && wso is JsonElement wsoEl)
+            body["web_search_options"] = wsoEl;
         // Always request usage from the upstream on streaming calls — OpenAI only
         // emits the final usage chunk when stream_options.include_usage=true, and
         // the gateway needs it for metering regardless of the caller's preference.
@@ -145,15 +170,17 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
             }
 
             var fnCalls = msg.Contents.OfType<FunctionCallContent>().ToList();
-            var thinkingText = msg.Contents
+            // Concatenate ALL thinking text and ALL non-thinking text — an assistant
+            // turn can carry several segments (esp. when tool_calls are present) and
+            // taking only the first dropped the rest.
+            var thinkingText = string.Concat(msg.Contents
                 .Where(ThinkingMapper.IsThinkingContent)
                 .OfType<TextContent>()
-                .Select(t => t.Text)
-                .FirstOrDefault(t => !string.IsNullOrEmpty(t));
-            var textContent = msg.Contents.OfType<TextContent>()
+                .Select(t => t.Text));
+            var joinedText = string.Concat(msg.Contents.OfType<TextContent>()
                 .Where(t => !ThinkingMapper.IsThinkingContent(t))
-                .Select(t => t.Text)
-                .FirstOrDefault();
+                .Select(t => t.Text));
+            var textContent = string.IsNullOrEmpty(joinedText) ? null : joinedText;
 
             if (fnCalls.Count > 0)
             {
@@ -161,7 +188,7 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
                 {
                     id = fc.CallId,
                     type = "function",
-                    function = new { name = fc.Name, arguments = SerializeArgs(fc.Arguments) }
+                    function = new { name = fc.Name, arguments = SerializeArgs(fc) }
                 }).ToList();
                 var assistantMsg = new Dictionary<string, object?>
                 {
@@ -190,7 +217,13 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
 
             if (contentParts.Count > 0)
             {
-                var rich = new Dictionary<string, object?> { ["role"] = role, ["content"] = contentParts };
+                // In array form every element must be a typed part object; a bare
+                // string (the shorthand carrier from BuildContentParts) is only legal
+                // as the whole `content` value, not as an array element.
+                var normalized = contentParts
+                    .Select(p => p is string s ? (object)new { type = "text", text = s } : p)
+                    .ToList();
+                var rich = new Dictionary<string, object?> { ["role"] = role, ["content"] = normalized };
                 if (role == "assistant" && !string.IsNullOrEmpty(thinkingText))
                     rich["reasoning_content"] = thinkingText;
                 result.Add(rich);
@@ -297,7 +330,7 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
                     }
                     else if (mime.StartsWith("audio/", StringComparison.Ordinal))
                     {
-                        var fmt = mime.Substring(6);
+                        var fmt = MapAudioFormat(mime);
                         var b64 = Convert.ToBase64String(dc.Data.ToArray());
                         parts.Add(new { type = "input_audio", input_audio = new { data = b64, format = fmt } });
                     }
@@ -329,10 +362,60 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
         return parts;
     }
 
+    private static string SerializeArgs(FunctionCallContent fc)
+    {
+        // Replay the original argument text verbatim when the inbound decoder kept
+        // it because it wasn't a valid JSON object — preserves history fidelity.
+        if (fc.AdditionalProperties?.TryGetValue("transit.openai.raw_arguments", out var raw) == true
+            && raw is string rawStr)
+            return rawStr;
+        return SerializeArgs(fc.Arguments);
+    }
+
     private static string SerializeArgs(IDictionary<string, object?>? args)
     {
         if (args is null) return "{}";
         try { return JsonSerializer.Serialize(args, JsonOpts); }
         catch { return "{}"; }
+    }
+
+    /// <summary>
+    /// Maps a MIME type to OpenAI's <c>input_audio.format</c> enum
+    /// (only <c>"wav"</c> / <c>"mp3"</c> are accepted). Unknown types fall back
+    /// to <c>"mp3"</c>.
+    /// </summary>
+    internal static string MapAudioFormat(string mime) => mime.ToLowerInvariant() switch
+    {
+        "audio/mpeg" or "audio/mp3" or "audio/mpga" or "audio/x-mp3" => "mp3",
+        "audio/wav" or "audio/x-wav" or "audio/wave" or "audio/vnd.wave" or "audio/x-pn-wav" => "wav",
+        _ => "mp3"
+    };
+
+    private static object? BuildResponseFormat(ChatResponseFormat fmt)
+    {
+        switch (fmt)
+        {
+            case ChatResponseFormatJson js when js.Schema is { } schema:
+            {
+                var jsonSchema = new Dictionary<string, object?>
+                {
+                    ["name"] = string.IsNullOrEmpty(js.SchemaName) ? "response" : js.SchemaName,
+                    ["schema"] = schema,
+                };
+                if (!string.IsNullOrEmpty(js.SchemaDescription))
+                    jsonSchema["description"] = js.SchemaDescription;
+                return new Dictionary<string, object?>
+                {
+                    ["type"] = "json_schema",
+                    ["json_schema"] = jsonSchema,
+                };
+            }
+            case ChatResponseFormatJson:
+                return new Dictionary<string, object?> { ["type"] = "json_object" };
+            case ChatResponseFormatText:
+                return new Dictionary<string, object?> { ["type"] = "text" };
+            default:
+                return null;
+        }
     }
 }

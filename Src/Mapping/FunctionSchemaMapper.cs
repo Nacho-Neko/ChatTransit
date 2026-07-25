@@ -1,10 +1,14 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Mapping;
+namespace ChatTransit.Mapping;
 
 /// <summary>
 /// Best-effort JSON Schema normalisation across protocols.
-/// Gemini does not support: $ref, $defs, additionalProperties, oneOf, anyOf, allOf with mixed types.
+/// <para>Gemini function-declaration <c>parameters</c> use the OpenAPI-3.0 subset,
+/// which <b>does</b> support <c>anyOf</c> (inline), <c>additionalProperties</c>,
+/// <c>prefixItems</c>, <c>enum</c>, and numeric bounds, but does <b>not</b> support
+/// <c>$ref</c>/<c>$defs</c> (references cannot be inlined here) or <c>allOf</c>.
+/// <c>oneOf</c> is folded into <c>anyOf</c> (Gemini treats them identically).</para>
 /// When converting to Gemini we degrade gracefully rather than failing.
 /// </summary>
 public static class FunctionSchemaMapper
@@ -39,41 +43,39 @@ public static class FunctionSchemaMapper
 
     private static void NormaliseForGemini(Dictionary<string, object?> node)
     {
-        // Remove unsupported keywords at this level
+        // Remove keywords the OpenAPI-subset `parameters` field cannot express.
+        // $ref/$defs can only be inlined via the newer parametersJsonSchema field;
+        // here we drop them (best-effort degrade). allOf has no subset equivalent.
         node.Remove("$schema");
-        node.Remove("$ref");       // Gemini cannot inline $ref — just drop
+        node.Remove("$id");
+        node.Remove("$ref");
         node.Remove("$defs");
         node.Remove("definitions");
         node.Remove("unevaluatedProperties");
         node.Remove("if");
         node.Remove("then");
         node.Remove("else");
+        node.Remove("allOf");
 
-        // Gemini does not support additionalProperties:true/false — remove
-        // (additionalProperties:{} schema would need recursive treatment; for now just strip)
+        // oneOf is accepted as anyOf by Gemini — fold it over so union semantics
+        // survive instead of being dropped.
+        if (node.Remove("oneOf", out var oneOf) && !node.ContainsKey("anyOf"))
+            node["anyOf"] = oneOf;
+
+        // anyOf IS supported (inline): recurse into each branch rather than drop it.
+        RecurseArray(node, "anyOf");
+        // prefixItems (tuple arrays) IS supported: recurse each positional schema.
+        RecurseArray(node, "prefixItems");
+
+        // additionalProperties IS supported (bool or schema). Keep bool as-is; when
+        // it is a nested schema object, recurse into it.
         if (node.TryGetValue("additionalProperties", out var ap)
-            && ap is JsonElement apEl && apEl.ValueKind != JsonValueKind.Object)
+            && ap is JsonElement apEl && apEl.ValueKind == JsonValueKind.Object)
         {
-            node.Remove("additionalProperties");
+            var apDict = CloneObject(apEl);
+            NormaliseForGemini(apDict);
+            node["additionalProperties"] = JsonSerializer.SerializeToElement(apDict, JsonOpts);
         }
-
-        // Flatten single-entry oneOf/anyOf to the entry itself if it is unambiguous
-        if (node.TryGetValue("oneOf", out var oneOf) && oneOf is JsonElement oneOfEl
-            && oneOfEl.ValueKind == JsonValueKind.Array && oneOfEl.GetArrayLength() == 1)
-        {
-            var single = CloneObject(oneOfEl.EnumerateArray().First());
-            foreach (var kv in single) node[kv.Key] = kv.Value;
-            node.Remove("oneOf");
-        }
-        else if (node.ContainsKey("oneOf"))
-        {
-            node.Remove("oneOf");
-        }
-
-        if (node.ContainsKey("anyOf"))
-            node.Remove("anyOf");
-        if (node.ContainsKey("allOf"))
-            node.Remove("allOf");
 
         // Recurse into "properties"
         if (node.TryGetValue("properties", out var props) && props is JsonElement propsEl
@@ -89,7 +91,7 @@ public static class FunctionSchemaMapper
             node["properties"] = JsonSerializer.SerializeToElement(newProps, JsonOpts);
         }
 
-        // Recurse into "items"
+        // Recurse into "items" (single-schema form)
         if (node.TryGetValue("items", out var items) && items is JsonElement itemsEl
             && itemsEl.ValueKind == JsonValueKind.Object)
         {
@@ -97,6 +99,32 @@ public static class FunctionSchemaMapper
             NormaliseForGemini(itemsDict);
             node["items"] = JsonSerializer.SerializeToElement(itemsDict, JsonOpts);
         }
+    }
+
+    /// <summary>Recurses <see cref="NormaliseForGemini"/> into each object element of
+    /// an array-valued keyword (e.g. <c>anyOf</c>, <c>prefixItems</c>).</summary>
+    private static void RecurseArray(Dictionary<string, object?> node, string key)
+    {
+        if (!node.TryGetValue(key, out var val)
+            || val is not JsonElement el
+            || el.ValueKind != JsonValueKind.Array)
+            return;
+
+        var normalised = new List<object?>();
+        foreach (var entry in el.EnumerateArray())
+        {
+            if (entry.ValueKind == JsonValueKind.Object)
+            {
+                var dict = CloneObject(entry);
+                NormaliseForGemini(dict);
+                normalised.Add(JsonSerializer.SerializeToElement(dict, JsonOpts));
+            }
+            else
+            {
+                normalised.Add(entry.Clone());
+            }
+        }
+        node[key] = JsonSerializer.SerializeToElement(normalised, JsonOpts);
     }
 
     private static Dictionary<string, object?> CloneObject(JsonElement el)

@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Inbound;
+namespace ChatTransit.Inbound;
 
 /// <summary>
 /// Decodes OpenAI Chat Completions (<c>POST /v1/chat/completions</c>) JSON into
@@ -32,6 +32,7 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
         var tools = DecodeTools(root);
 
         ApplyScalars(root, options);
+        ApplyResponseFormat(root, options);
         ApplyToolChoice(root, options, hints);
         BuildHints(root, hints);
 
@@ -140,8 +141,17 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
                             ? a.ValueKind == JsonValueKind.String ? a.GetString() ?? "" : a.GetRawText()
                             : "";
                     }
-                    contents.Add(new FunctionCallContent(
-                        tcId, fnName, fnArgs.Length > 0 ? ParseArguments(fnArgs) : null));
+                    var parsedArgs = fnArgs.Length > 0 ? ParseArguments(fnArgs) : null;
+                    var fcc = new FunctionCallContent(tcId, fnName, parsedArgs);
+                    // Preserve the original argument string when it isn't a valid
+                    // JSON object so the outbound encoder can replay it byte-for-byte
+                    // instead of collapsing the history into "{}".
+                    if (parsedArgs is null && !string.IsNullOrEmpty(fnArgs))
+                    {
+                        fcc.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                        fcc.AdditionalProperties["transit.openai.raw_arguments"] = fnArgs;
+                    }
+                    contents.Add(fcc);
                 }
             }
             return contents;
@@ -243,20 +253,30 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
     private static void ApplyScalars(JsonElement root, ChatOptions options)
     {
         // OpenAI Chat already uses the IR [0, 2] scale; clamp defensively.
-        if (root.TryGetProperty("temperature", out var temp) && temp.TryGetDouble(out var t))
+        // Guard on JsonValueKind.Number first — TryGetDouble/TryGetInt32/TryGetInt64
+        // throw InvalidOperationException when the field is present but explicitly
+        // null (or any non-number), which clients routinely send.
+        if (root.TryGetProperty("temperature", out var temp) && temp.ValueKind == JsonValueKind.Number
+            && temp.TryGetDouble(out var t))
             options.Temperature = SamplingScaleMapper.ClampTemperatureForOpenAiScale((float)t);
-        if (root.TryGetProperty("top_p", out var topP) && topP.TryGetDouble(out var tp))
+        if (root.TryGetProperty("top_p", out var topP) && topP.ValueKind == JsonValueKind.Number
+            && topP.TryGetDouble(out var tp))
             options.TopP = SamplingScaleMapper.ClampTopP((float)tp);
-        if (root.TryGetProperty("max_completion_tokens", out var mct) && mct.TryGetInt32(out var mc))
+        if (root.TryGetProperty("max_completion_tokens", out var mct) && mct.ValueKind == JsonValueKind.Number
+            && mct.TryGetInt32(out var mc))
             options.MaxOutputTokens = mc;
-        else if (root.TryGetProperty("max_tokens", out var mt) && mt.TryGetInt32(out var mti))
+        else if (root.TryGetProperty("max_tokens", out var mt) && mt.ValueKind == JsonValueKind.Number
+            && mt.TryGetInt32(out var mti))
             options.MaxOutputTokens = mti;
 
-        if (root.TryGetProperty("frequency_penalty", out var fp) && fp.TryGetDouble(out var fpv))
+        if (root.TryGetProperty("frequency_penalty", out var fp) && fp.ValueKind == JsonValueKind.Number
+            && fp.TryGetDouble(out var fpv))
             options.FrequencyPenalty = (float)Math.Clamp(fpv, -2.0, 2.0);
-        if (root.TryGetProperty("presence_penalty", out var pp) && pp.TryGetDouble(out var ppv))
+        if (root.TryGetProperty("presence_penalty", out var pp) && pp.ValueKind == JsonValueKind.Number
+            && pp.TryGetDouble(out var ppv))
             options.PresencePenalty = (float)Math.Clamp(ppv, -2.0, 2.0);
-        if (root.TryGetProperty("seed", out var seed) && seed.TryGetInt64(out var seedVal))
+        if (root.TryGetProperty("seed", out var seed) && seed.ValueKind == JsonValueKind.Number
+            && seed.TryGetInt64(out var seedVal))
             options.Seed = seedVal;
 
         // Stop sequences (string | array)
@@ -269,6 +289,39 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
                     .Where(x => x.ValueKind == JsonValueKind.String)
                     .Select(x => x.GetString()!)
                     .ToList();
+        }
+    }
+
+    /// <summary>
+    /// Maps <c>response_format</c> onto the canonical
+    /// <see cref="ChatOptions.ResponseFormat"/> so cross-protocol routes honour
+    /// JSON-mode / JSON-schema constraints (the raw hint still takes precedence on
+    /// OpenAI → OpenAI passthrough).
+    /// </summary>
+    private static void ApplyResponseFormat(JsonElement root, ChatOptions options)
+    {
+        if (!root.TryGetProperty("response_format", out var rf) || rf.ValueKind != JsonValueKind.Object)
+            return;
+
+        var type = rf.TryGetProperty("type", out var tEl) && tEl.ValueKind == JsonValueKind.String
+            ? tEl.GetString() : null;
+
+        if (type == "json_object")
+        {
+            options.ResponseFormat = ChatResponseFormat.Json;
+        }
+        else if (type == "json_schema"
+                 && rf.TryGetProperty("json_schema", out var js)
+                 && js.ValueKind == JsonValueKind.Object)
+        {
+            var name = js.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String
+                ? n.GetString() : null;
+            var desc = js.TryGetProperty("description", out var d) && d.ValueKind == JsonValueKind.String
+                ? d.GetString() : null;
+            if (js.TryGetProperty("schema", out var schema) && schema.ValueKind == JsonValueKind.Object)
+                options.ResponseFormat = ChatResponseFormat.ForJsonSchema(schema.Clone(), name, desc);
+            else
+                options.ResponseFormat = ChatResponseFormat.Json;
         }
     }
 
@@ -339,10 +392,12 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
         if (root.TryGetProperty("logprobs", out var lp) && lp.ValueKind == JsonValueKind.True)
             hints[OpenAiHints.Logprobs] = true;
 
-        if (root.TryGetProperty("top_logprobs", out var tlp) && tlp.TryGetInt32(out var tlpv))
+        if (root.TryGetProperty("top_logprobs", out var tlp) && tlp.ValueKind == JsonValueKind.Number
+            && tlp.TryGetInt32(out var tlpv))
             hints[OpenAiHints.TopLogprobs] = tlpv;
 
-        if (root.TryGetProperty("n", out var nEl) && nEl.TryGetInt32(out var nv))
+        if (root.TryGetProperty("n", out var nEl) && nEl.ValueKind == JsonValueKind.Number
+            && nEl.TryGetInt32(out var nv))
             hints[OpenAiHints.CandidateCount] = nv;
 
         if (root.TryGetProperty("user", out var user) && user.GetString() is { } uv)
@@ -360,6 +415,21 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
         // Anthropic thinking.budget_tokens / Gemini thinkingConfig.thinkingLevel.
         if (root.TryGetProperty("reasoning_effort", out var re) && re.GetString() is { } rev)
             hints[OpenAiHints.ReasoningEffort] = rev;
+
+        // Request-level passthrough fields (OpenAI → OpenAI fidelity). Stored as a
+        // cloned JsonElement and re-emitted verbatim by the outbound encoder.
+        if (root.TryGetProperty("store", out var store) && store.ValueKind != JsonValueKind.Null)
+            hints[OpenAiHints.Store] = store.Clone();
+        if (root.TryGetProperty("metadata", out var md) && md.ValueKind == JsonValueKind.Object)
+            hints[OpenAiHints.Metadata] = md.Clone();
+        if (root.TryGetProperty("verbosity", out var vb) && vb.ValueKind == JsonValueKind.String)
+            hints[OpenAiHints.Verbosity] = vb.Clone();
+        if (root.TryGetProperty("modalities", out var mod) && mod.ValueKind == JsonValueKind.Array)
+            hints[OpenAiHints.Modalities] = mod.Clone();
+        if (root.TryGetProperty("prediction", out var pred) && pred.ValueKind == JsonValueKind.Object)
+            hints[OpenAiHints.Prediction] = pred.Clone();
+        if (root.TryGetProperty("web_search_options", out var wso) && wso.ValueKind == JsonValueKind.Object)
+            hints[OpenAiHints.WebSearchOptions] = wso.Clone();
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

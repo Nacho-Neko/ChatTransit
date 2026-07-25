@@ -1,6 +1,6 @@
-using Microsoft.Extensions.AI;
+﻿using Microsoft.Extensions.AI;
 
-namespace Gateway.Shared.ChatTransit;
+namespace ChatTransit;
 
 /// <summary>
 /// Intermediate representation of an inbound AI request.

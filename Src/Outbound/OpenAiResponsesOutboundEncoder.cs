@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Outbound;
+namespace ChatTransit.Outbound;
 
 /// <summary>
 /// Encodes a <see cref="TransitRequest"/> into OpenAI Responses API JSON bytes.
@@ -28,20 +28,22 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         body["model"] = request.Model;
         body["stream"] = request.Stream;
 
-        // instructions: prefer explicit hint, fall back to system message text
-        if (request.Hints.TryGetValue(OpenAiHints.ResponsesInstructions, out var insHint)
-            && insHint is string insStr && !string.IsNullOrEmpty(insStr))
+        // instructions: fold EVERY system/developer message into a single string
+        // (joined with a blank line) so no system content is lost on the round-trip
+        // — taking only the first system message dropped the rest. Fall back to the
+        // explicit instructions hint only when there is no system text at all.
+        var sysText = string.Join("\n\n", request.Messages
+            .Where(m => m.Role == ChatRole.System)
+            .SelectMany(m => m.Contents.OfType<TextContent>().Select(t => t.Text))
+            .Where(t => !string.IsNullOrWhiteSpace(t)));
+        if (!string.IsNullOrEmpty(sysText))
+        {
+            body["instructions"] = sysText;
+        }
+        else if (request.Hints.TryGetValue(OpenAiHints.ResponsesInstructions, out var insHint)
+                 && insHint is string insStr && !string.IsNullOrEmpty(insStr))
         {
             body["instructions"] = insStr;
-        }
-        else
-        {
-            var sysText = request.Messages
-                .Where(m => m.Role == ChatRole.System)
-                .SelectMany(m => m.Contents.OfType<TextContent>().Select(t => t.Text))
-                .Where(t => !string.IsNullOrWhiteSpace(t))
-                .FirstOrDefault();
-            if (!string.IsNullOrEmpty(sysText)) body["instructions"] = sysText;
         }
 
         var nonSystem = request.Messages.Where(m => m.Role != ChatRole.System).ToList();
@@ -85,15 +87,18 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         }
         if (toolItems.Count > 0) body["tools"] = toolItems;
 
-        // tool_choice
-        if (request.Hints.TryGetValue(OpenAiHints.ToolChoice, out var tc) && tc is JsonElement tcEl)
-        {
-            body["tool_choice"] = tcEl;
-        }
-        else if (opts.ToolMode is { } toolMode)
+        // tool_choice: project from the canonical ToolMode when set (the Chat nested
+        // {type,function:{name}} and Responses flat {type,name} shapes are not
+        // interchangeable, so a raw hint captured on the other protocol must not be
+        // forwarded). Fall back to the raw hint only when ToolMode is null.
+        if (opts.ToolMode is { } toolMode)
         {
             var projected = ProjectToolMode(toolMode);
             if (projected != null) body["tool_choice"] = projected;
+        }
+        else if (request.Hints.TryGetValue(OpenAiHints.ToolChoice, out var tc) && tc is JsonElement tcEl)
+        {
+            body["tool_choice"] = tcEl;
         }
 
         // Hint passthrough — everything else the Responses API supports
@@ -130,6 +135,18 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
             body["prompt_cache_key"] = pckStr;
         if (request.Hints.TryGetValue("openai.responses.metadata", out var md) && md is JsonElement mdEl)
             body["metadata"] = mdEl;
+        if (request.Hints.TryGetValue(OpenAiHints.ResponsesPrompt, out var pr) && pr is JsonElement prEl)
+            body["prompt"] = prEl;
+        if (request.Hints.TryGetValue(OpenAiHints.ResponsesBackground, out var bg) && bg is JsonElement bgEl)
+            body["background"] = bgEl;
+        if (request.Hints.TryGetValue(OpenAiHints.ResponsesMaxToolCalls, out var mtc) && mtc is JsonElement mtcEl)
+            body["max_tool_calls"] = mtcEl;
+        if (request.Hints.TryGetValue(OpenAiHints.TopLogprobs, out var tlp) && tlp is int tlpv)
+            body["top_logprobs"] = tlpv;
+        if (request.Hints.TryGetValue(OpenAiHints.ResponsesConversation, out var cv) && cv is JsonElement cvEl)
+            body["conversation"] = cvEl;
+        if (request.Hints.TryGetValue(OpenAiHints.ResponsesStreamOptions, out var so) && so is JsonElement soEl)
+            body["stream_options"] = soEl;
 
         return JsonSerializer.SerializeToUtf8Bytes(body, JsonOpts);
     }
@@ -260,6 +277,7 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         foreach (var c in contents)
         {
             if (ThinkingMapper.IsThinkingContent(c)) continue;
+            var detail = GetDetail(c);
             switch (c)
             {
                 case TextContent tc when !string.IsNullOrEmpty(tc.Text):
@@ -275,26 +293,41 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
                     if (mime.StartsWith("image/", StringComparison.Ordinal))
                     {
                         var url = MultimodalContentMapper.ToOpenAiImageUrl(dc);
-                        if (url != null) parts.Add(new { type = "input_image", image_url = url });
+                        if (url != null)
+                        {
+                            var img = new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_image",
+                                ["image_url"] = url
+                            };
+                            if (!string.IsNullOrEmpty(detail)) img["detail"] = detail;
+                            parts.Add(img);
+                        }
                     }
                     else if (mime.StartsWith("audio/", StringComparison.Ordinal))
                     {
-                        // OpenAI Responses also accepts input_audio (mirrors Chat Completions)
-                        var fmt = mime.Substring(6);
+                        // OpenAI Responses also accepts input_audio (mirrors Chat Completions);
+                        // map the MIME onto the wav/mp3 enum rather than slicing the string.
+                        var fmt = MapAudioFormat(mime);
                         var b64 = Convert.ToBase64String(dc.Data.ToArray());
                         parts.Add(new { type = "input_audio", input_audio = new { data = b64, format = fmt } });
                     }
                     else
                     {
+                        // file_data must be a data URI, and base64 file inputs require a
+                        // filename per the official API; synthesize one from the MIME
+                        // type when the source didn't carry it.
                         var b64 = Convert.ToBase64String(dc.Data.ToArray());
                         var filename = dc.AdditionalProperties?
                             .TryGetValue("transit.openai.filename", out var fn) == true ? fn as string : null;
+                        if (string.IsNullOrEmpty(filename)) filename = DefaultFileName(mime);
                         var inputFile = new Dictionary<string, object?>
                         {
                             ["type"] = "input_file",
-                            ["file_data"] = b64
+                            ["file_data"] = $"data:{mime};base64,{b64}",
+                            ["filename"] = filename
                         };
-                        if (!string.IsNullOrEmpty(filename)) inputFile["filename"] = filename;
+                        if (!string.IsNullOrEmpty(detail)) inputFile["detail"] = detail;
                         parts.Add(inputFile);
                     }
                     break;
@@ -305,16 +338,41 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
                     if (uc.AdditionalProperties?.TryGetValue("transit.openai.file_id", out var fid) == true
                         && fid is string fileId)
                     {
-                        parts.Add(new { type = "input_file", file_id = fileId });
+                        // file_id can carry either an image or a document; the tag
+                        // doesn't record which, so key off the MIME type.
+                        var isImage = (uc.MediaType ?? "").StartsWith("image/", StringComparison.Ordinal);
+                        var item = new Dictionary<string, object?>
+                        {
+                            ["type"] = isImage ? "input_image" : "input_file",
+                            ["file_id"] = fileId
+                        };
+                        if (isImage && !string.IsNullOrEmpty(detail)) item["detail"] = detail;
+                        parts.Add(item);
                     }
                     else
                     {
                         var url = uc.Uri?.ToString();
                         if (string.IsNullOrEmpty(url)) break;
                         if ((uc.MediaType ?? "").StartsWith("image/", StringComparison.Ordinal))
-                            parts.Add(new { type = "input_image", image_url = url });
+                        {
+                            var img = new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_image",
+                                ["image_url"] = url
+                            };
+                            if (!string.IsNullOrEmpty(detail)) img["detail"] = detail;
+                            parts.Add(img);
+                        }
                         else
-                            parts.Add(new { type = "input_file", file_url = url });
+                        {
+                            var file = new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_file",
+                                ["file_url"] = url
+                            };
+                            if (!string.IsNullOrEmpty(detail)) file["detail"] = detail;
+                            parts.Add(file);
+                        }
                     }
                     break;
                 }
@@ -322,6 +380,32 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         }
         return parts;
     }
+
+    private static string? GetDetail(AIContent c) =>
+        c.AdditionalProperties?.TryGetValue("transit.openai.detail", out var d) == true
+            ? d as string : null;
+
+    /// <summary>
+    /// Maps a MIME type to OpenAI's <c>input_audio.format</c> enum
+    /// (only <c>"wav"</c> / <c>"mp3"</c> are accepted). Unknown types fall back
+    /// to <c>"mp3"</c>.
+    /// </summary>
+    private static string MapAudioFormat(string mime) => mime.ToLowerInvariant() switch
+    {
+        "audio/mpeg" or "audio/mp3" or "audio/mpga" or "audio/x-mp3" => "mp3",
+        "audio/wav" or "audio/x-wav" or "audio/wave" or "audio/vnd.wave" or "audio/x-pn-wav" => "wav",
+        _ => "mp3"
+    };
+
+    private static string DefaultFileName(string mime) => mime switch
+    {
+        "application/pdf" => "file.pdf",
+        "text/plain" => "file.txt",
+        "text/markdown" => "file.md",
+        "application/json" => "file.json",
+        "text/csv" => "file.csv",
+        _ => "file.bin"
+    };
 
     /// <summary>
     /// Converts a Chat-Completions-shaped <c>response_format</c>
@@ -425,6 +509,9 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
     {
         null => "",
         JsonElement je when je.ValueKind == JsonValueKind.String => je.GetString() ?? "",
+        // A structured array output (input_text / input_image parts, etc.) must be
+        // forwarded as an array — GetRawText() would collapse it into a JSON string.
+        JsonElement je when je.ValueKind == JsonValueKind.Array => je,
         JsonElement je => je.GetRawText(),
         string s => s,
         _ => result.ToString() ?? ""

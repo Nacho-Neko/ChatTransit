@@ -1,10 +1,10 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Mapping;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
+using ChatTransit.Mapping;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Inbound;
+namespace ChatTransit.Inbound;
 
 /// <summary>
 /// Decodes Anthropic Messages API (<c>POST /v1/messages</c>) JSON into a <see cref="TransitRequest"/>.

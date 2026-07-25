@@ -1,6 +1,6 @@
-using Gateway.Shared.ChatTransit.Abstractions;
+﻿using ChatTransit.Abstractions;
 
-namespace Gateway.Shared.ChatTransit.Responses;
+namespace ChatTransit.Responses;
 
 /// <summary>
 /// Resolves <see cref="IResponseSseEncoder"/> and <see cref="IResponseCollector"/>

@@ -1,6 +1,6 @@
-using Microsoft.Extensions.AI;
+﻿using Microsoft.Extensions.AI;
 
-namespace Gateway.Shared.ChatTransit.Mapping;
+namespace ChatTransit.Mapping;
 
 /// <summary>
 /// Maps multimodal content (images, PDFs) between MEAI IR and protocol wire formats.
@@ -41,8 +41,12 @@ public static class MultimodalContentMapper
     public static DataContent? FromAnthropicBase64Source(string mediaType, string base64Data)
     {
         if (string.IsNullOrEmpty(base64Data)) return null;
-        var bytes = Convert.FromBase64String(base64Data);
-        return new DataContent(bytes, mediaType);
+        try
+        {
+            var bytes = Convert.FromBase64String(base64Data);
+            return new DataContent(bytes, mediaType);
+        }
+        catch (FormatException) { return null; } // malformed base64 — drop rather than 500
     }
 
     /// <summary>
@@ -83,8 +87,12 @@ public static class MultimodalContentMapper
                 isBase64 = true;
 
             if (!isBase64) return null;
-            var bytes = Convert.FromBase64String(data);
-            return new DataContent(bytes, mediaType);
+            try
+            {
+                var bytes = Convert.FromBase64String(data);
+                return new DataContent(bytes, mediaType);
+            }
+            catch (FormatException) { return null; } // malformed base64 — drop rather than 500
         }
 
         return new UriContent(url, GuessMimeFromUri(url));

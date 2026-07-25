@@ -1,10 +1,9 @@
-using Gateway.Shared.ChatTransit.Mapping;
-using Gateway.Shared.Messaging.Serialization;
+﻿using ChatTransit.Mapping;
 using MessagePack;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Responses;
+namespace ChatTransit.Responses;
 
 /// <summary>
 /// Converts <see cref="StreamingChunkDto"/> events into OpenAI Chat Completions
@@ -86,14 +85,15 @@ public static class OpenAiChatSseEncoder
                         }
                         else if (chunk.FunctionArguments != null)
                         {
+                            // Continuation delta: emit only index + function.arguments;
+                            // omitting id/type/name (rather than sending explicit nulls)
+                            // matches the official incremental tool_call delta shape.
                             var tc = new[]
                             {
                                 new
                                 {
                                     index = toolCallIndex,
-                                    id = (string?)null,
-                                    type = (string?)null,
-                                    function = new { name = (string?)null, arguments = chunk.FunctionArguments }
+                                    function = new { arguments = chunk.FunctionArguments }
                                 }
                             };
                             yield return FormatChunk(completionId, created, model, fingerprint,
@@ -232,23 +232,20 @@ public static class OpenAiChatSseEncoder
         var reasoningObj = !string.IsNullOrEmpty(reasoningSignature)
             ? (object?)new { encrypted_content = reasoningSignature }
             : null;
-        var message = toolCalls.Count > 0
-            ? (object)new
-            {
-                role = "assistant",
-                content = contentBuffer.Length > 0 ? contentBuffer.ToString() : (string?)null,
-                reasoning_content = reasoning,
-                reasoning = reasoningObj,
-                tool_calls = toolCalls
-            }
-            : new
-            {
-                role = "assistant",
-                content = contentBuffer.ToString(),
-                reasoning_content = reasoning,
-                reasoning = reasoningObj,
-                tool_calls = (List<object>?)null
-            };
+        // Omit reasoning_content / reasoning / tool_calls when they have no value
+        // (rather than emitting explicit nulls) — mirrors the streaming BuildDelta.
+        var message = new Dictionary<string, object?>(StringComparer.Ordinal) { ["role"] = "assistant" };
+        if (toolCalls.Count > 0)
+        {
+            message["content"] = contentBuffer.Length > 0 ? contentBuffer.ToString() : null;
+            message["tool_calls"] = toolCalls;
+        }
+        else
+        {
+            message["content"] = contentBuffer.ToString();
+        }
+        if (reasoning != null) message["reasoning_content"] = reasoning;
+        if (reasoningObj != null) message["reasoning"] = reasoningObj;
 
         var promptDetails = cachedTokens > 0
             ? (object?)new { cached_tokens = cachedTokens }

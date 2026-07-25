@@ -1,8 +1,8 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.OpenAi;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.OpenAi;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Errors;
+namespace ChatTransit.Errors;
 
 /// <summary>
 /// Builds OpenAI-format error response objects and SSE error events.
@@ -28,6 +28,7 @@ public sealed class OpenAiErrorEncoder : IErrorEncoder
             {
                 Message = error.Message,
                 Type = MapType(error),
+                Param = GetParam(error),
                 Code = error.ErrorCode
             }
         };
@@ -40,6 +41,7 @@ public sealed class OpenAiErrorEncoder : IErrorEncoder
             {
                 message = error.Message,
                 type = MapType(error),
+                param = GetParam(error),
                 code = error.ErrorCode
             }
         });
@@ -62,21 +64,21 @@ public sealed class OpenAiErrorEncoder : IErrorEncoder
     }
 
     /// <summary>
-    /// Maps HTTP status codes to the official OpenAI <c>error.type</c> enum.
-    /// Reference: <see href="https://platform.openai.com/docs/guides/error-codes/api-errors"/>.
-    /// Only the canonical strings the SDK and docs use are emitted — historical
-    /// vendor extensions (e.g. <c>permission_denied_error</c>,
-    /// <c>service_unavailable_error</c>) are normalised away.
+    /// Maps HTTP status codes to the vocabulary OpenAI actually emits in the
+    /// <c>error.type</c> field. Reference:
+    /// <see href="https://platform.openai.com/docs/guides/error-codes/api-errors"/>.
+    /// OpenAI overwhelmingly returns <c>invalid_request_error</c> for 4xx client
+    /// errors (differentiated by the machine-readable <c>code</c>, e.g.
+    /// <c>invalid_api_key</c>, <c>model_not_found</c>), <c>rate_limit_error</c> for
+    /// non-quota 429s, and <c>api_error</c> for 5xx. Quota exhaustion
+    /// (<c>insufficient_quota</c>) is handled in <see cref="MapType"/>.
     /// </summary>
     public static string MapStatusType(int statusCode) => statusCode switch
     {
-        400 or 422 => "invalid_request_error",
-        401 => "authentication_error",
-        403 => "permission_error",
-        404 => "not_found_error",
-        409 => "conflict_error",
+        400 or 401 or 403 or 404 or 409 or 422 => "invalid_request_error",
         429 => "rate_limit_error",
-        _ => "api_error"
+        >= 500 => "api_error",
+        _ => "invalid_request_error"
     };
 
     // ── Mapping ───────────────────────────────────────────────────────────────
@@ -85,8 +87,21 @@ public sealed class OpenAiErrorEncoder : IErrorEncoder
     {
         if (!string.IsNullOrEmpty(error.ProviderErrorType))
             return error.ProviderErrorType!;
+        // A 429 caused by billing/quota carries OpenAI's dedicated type rather than
+        // the retryable rate-limit type.
+        if (error.StatusCode == 429
+            && error.ErrorCode.Contains("quota", StringComparison.OrdinalIgnoreCase))
+            return "insufficient_quota";
         return MapStatusType(error.StatusCode);
     }
+
+    /// <summary>
+    /// Extracts the offending parameter name from <see cref="TransitError.Extra"/>
+    /// when present. The key is always emitted on the wire (as <c>null</c> when
+    /// unknown), matching OpenAI's error-object shape.
+    /// </summary>
+    private static object? GetParam(TransitError error)
+        => error.Extra != null && error.Extra.TryGetValue("param", out var p) ? p : null;
 }
 
 /// <summary>

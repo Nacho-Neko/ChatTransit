@@ -1,12 +1,10 @@
-using Gateway.Shared.ChatTransit.Gemini;
-using Gateway.Shared.ChatTransit.Mapping;
-using Gateway.Shared.Messaging.Serialization;
-using Gateway.Shared.Providers.Streaming;
+﻿using ChatTransit.Gemini;
+using ChatTransit.Mapping;
 using MessagePack;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Responses;
+namespace ChatTransit.Responses;
 
 /// <summary>
 /// Converts <see cref="StreamingChunkDto"/> events into Gemini's
@@ -49,9 +47,11 @@ public static class GeminiSseEncoder
         var contentBuffer = new System.Text.StringBuilder();
         var thinkingBuffer = new System.Text.StringBuilder();
         string? thinkingSignature = null;
+        string? contentSignature = null;
         var toolCalls = new List<GeminiPart>();
         string? currentToolName = null;
         string? currentToolId = null;
+        string? currentToolSignature = null;
         var currentToolArgs = new System.Text.StringBuilder();
         var promptTokens = 0;
         var completionTokens = 0;
@@ -79,17 +79,28 @@ public static class GeminiSseEncoder
 
                 case StreamingContentType.Text when chunk.Text != null:
                     if (IsThoughtChunk(chunk))
+                    {
                         thinkingBuffer.Append(chunk.Text);
+                        if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                            thinkingSignature = chunk.ReasoningSignature;
+                    }
                     else
+                    {
                         contentBuffer.Append(chunk.Text);
+                        // A non-thought text part may carry a thoughtSignature in
+                        // Gemini 3; keep the last non-empty one for the merged part.
+                        if (!string.IsNullOrEmpty(chunk.ReasoningSignature))
+                            contentSignature = chunk.ReasoningSignature;
+                    }
                     break;
 
                 case StreamingContentType.FunctionCall:
                     if (chunk.FunctionName != null)
                     {
-                        FlushToolCall(toolCalls, ref currentToolName, ref currentToolId, currentToolArgs);
+                        FlushToolCall(toolCalls, ref currentToolName, ref currentToolId, ref currentToolSignature, currentToolArgs);
                         currentToolName = chunk.FunctionName;
                         currentToolId = chunk.FunctionCallId;
+                        currentToolSignature = chunk.ReasoningSignature;
                         hadToolCalls = true;
                     }
                     if (chunk.FunctionArguments != null)
@@ -97,15 +108,15 @@ public static class GeminiSseEncoder
                     break;
 
                 case StreamingContentType.Usage when chunk.Usage != null:
-                    promptTokens = ResolveUsageLong(chunk.Usage, promptTokens, ProviderUsageKeys.InputCandidates);
-                    completionTokens = ResolveUsageLong(chunk.Usage, completionTokens, ProviderUsageKeys.OutputCandidates);
-                    cachedTokens = ResolveUsageLong(chunk.Usage, cachedTokens, ProviderUsageKeys.CacheReadInputCandidates);
+                    promptTokens = ResolveUsageLong(chunk.Usage, promptTokens, ChatTransitUsageKeys.InputCandidates);
+                    completionTokens = ResolveUsageLong(chunk.Usage, completionTokens, ChatTransitUsageKeys.OutputCandidates);
+                    cachedTokens = ResolveUsageLong(chunk.Usage, cachedTokens, ChatTransitUsageKeys.CacheReadInputCandidates);
                     reasoningTokens = ResolveUsageLong(chunk.Usage, reasoningTokens, ReasoningCandidates);
                     break;
             }
         }
 
-        FlushToolCall(toolCalls, ref currentToolName, ref currentToolId, currentToolArgs);
+        FlushToolCall(toolCalls, ref currentToolName, ref currentToolId, ref currentToolSignature, currentToolArgs);
 
         var parts = new List<GeminiPart>();
         if (thinkingBuffer.Length > 0 || !string.IsNullOrEmpty(thinkingSignature))
@@ -116,7 +127,11 @@ public static class GeminiSseEncoder
                 ThoughtSignature = thinkingSignature,
             });
         if (contentBuffer.Length > 0)
-            parts.Add(new GeminiPart { Text = contentBuffer.ToString() });
+            parts.Add(new GeminiPart
+            {
+                Text = contentBuffer.ToString(),
+                ThoughtSignature = string.IsNullOrEmpty(contentSignature) ? null : contentSignature,
+            });
         parts.AddRange(toolCalls);
         if (parts.Count == 0)
             parts.Add(new GeminiPart { Text = "" });
@@ -193,6 +208,7 @@ public static class GeminiSseEncoder
         var reasoningTokens = 0;
         string? currentToolName = null;
         string? currentToolId = null;
+        string? currentToolSignature = null;
         var currentToolArgs = new System.Text.StringBuilder();
         string? upstreamFinishReason = null;
         bool hadToolCalls = false;
@@ -222,12 +238,16 @@ public static class GeminiSseEncoder
                     break;
 
                 case StreamingContentType.Text when chunk.Text != null:
+                    // A thoughtSignature can ride on an ordinary (non-thought) text
+                    // part in Gemini 3; echo it back on the emitted text part so the
+                    // caller can replay it next turn.
                     yield return new StreamItem
                     {
                         Response = MakeChunk(new GeminiPart
                         {
                             Text = chunk.Text,
-                            Thought = IsThoughtChunk(chunk)
+                            Thought = IsThoughtChunk(chunk),
+                            ThoughtSignature = string.IsNullOrEmpty(chunk.ReasoningSignature) ? null : chunk.ReasoningSignature,
                         })
                     };
                     break;
@@ -241,12 +261,13 @@ public static class GeminiSseEncoder
                             yield return new StreamItem
                             {
                                 Response = MakeChunk(BuildFunctionCallPart(
-                                    currentToolName, currentToolId, parsedPrev), finishReason: null)
+                                    currentToolName, currentToolId, parsedPrev, currentToolSignature), finishReason: null)
                             };
                             currentToolArgs.Clear();
                         }
                         currentToolName = chunk.FunctionName;
                         currentToolId = chunk.FunctionCallId;
+                        currentToolSignature = chunk.ReasoningSignature;
                         hadToolCalls = true;
                     }
                     if (chunk.FunctionArguments != null)
@@ -254,9 +275,9 @@ public static class GeminiSseEncoder
                     break;
 
                 case StreamingContentType.Usage when chunk.Usage != null:
-                    promptTokens = ResolveUsageLong(chunk.Usage, promptTokens, ProviderUsageKeys.InputCandidates);
-                    completionTokens = ResolveUsageLong(chunk.Usage, completionTokens, ProviderUsageKeys.OutputCandidates);
-                    cachedTokens = ResolveUsageLong(chunk.Usage, cachedTokens, ProviderUsageKeys.CacheReadInputCandidates);
+                    promptTokens = ResolveUsageLong(chunk.Usage, promptTokens, ChatTransitUsageKeys.InputCandidates);
+                    completionTokens = ResolveUsageLong(chunk.Usage, completionTokens, ChatTransitUsageKeys.OutputCandidates);
+                    cachedTokens = ResolveUsageLong(chunk.Usage, cachedTokens, ChatTransitUsageKeys.CacheReadInputCandidates);
                     reasoningTokens = ResolveUsageLong(chunk.Usage, reasoningTokens, ReasoningCandidates);
                     break;
 
@@ -271,7 +292,7 @@ public static class GeminiSseEncoder
             var parsedArgs = TryParseArgs(currentToolArgs);
             yield return new StreamItem
             {
-                Response = MakeChunk(BuildFunctionCallPart(currentToolName, currentToolId, parsedArgs))
+                Response = MakeChunk(BuildFunctionCallPart(currentToolName, currentToolId, parsedArgs, currentToolSignature))
             };
         }
 
@@ -282,11 +303,19 @@ public static class GeminiSseEncoder
         };
     }
 
-    private static GeminiPart BuildFunctionCallPart(string name, string? id, JsonElement? args)
+    // Gemini's functionCall.args is documented to always be an object; a null
+    // (empty or unparseable args) must serialize as {} rather than JSON null.
+    private static readonly JsonElement EmptyArgsObject =
+        JsonSerializer.SerializeToElement(new Dictionary<string, object?>());
+
+    private static GeminiPart BuildFunctionCallPart(string name, string? id, JsonElement? args, string? signature = null)
     {
         var part = new GeminiPart
         {
-            FunctionCall = new FunctionCall { Name = name, Args = args }
+            FunctionCall = new FunctionCall { Name = name, Args = args ?? EmptyArgsObject },
+            // Gemini 3 requires the thoughtSignature to be echoed back on the exact
+            // functionCall part it was received on, or the next turn 400s.
+            ThoughtSignature = string.IsNullOrEmpty(signature) ? null : signature,
         };
         if (!string.IsNullOrEmpty(id) && !string.Equals(id, name, StringComparison.Ordinal))
             part.FunctionCall.Id = id;
@@ -301,17 +330,20 @@ public static class GeminiSseEncoder
         int reasoningTokens,
         string finishReason)
     {
+        var candidate = new Candidate
+        {
+            FinishReason = finishReason,
+            Index = 0
+        };
+        // The closing chunk carries only finishReason + usage; emitting a content
+        // object with an empty parts[] is non-conformant, so omit content entirely
+        // when there is nothing left to send.
+        if (parts.Count > 0)
+            candidate.Content = new GeminiContent { Role = "model", Parts = parts };
+
         return new GenerateContentResponse
         {
-            Candidates =
-            [
-                new Candidate
-                {
-                    Content = new GeminiContent { Role = "model", Parts = parts },
-                    FinishReason = finishReason,
-                    Index = 0
-                }
-            ],
+            Candidates = [candidate],
             UsageMetadata = BuildUsageMetadata(promptTokens, completionTokens, cachedTokens, reasoningTokens)
         };
     }
@@ -341,15 +373,17 @@ public static class GeminiSseEncoder
     };
 
     private static void FlushToolCall(
-        List<GeminiPart> parts, ref string? toolName, ref string? toolId, System.Text.StringBuilder args)
+        List<GeminiPart> parts, ref string? toolName, ref string? toolId,
+        ref string? toolSignature, System.Text.StringBuilder args)
     {
         if (toolName == null) return;
 
         JsonElement? parsedArgs = TryParseArgs(args);
-        parts.Add(BuildFunctionCallPart(toolName, toolId, parsedArgs));
+        parts.Add(BuildFunctionCallPart(toolName, toolId, parsedArgs, toolSignature));
 
         toolName = null;
         toolId = null;
+        toolSignature = null;
         args.Clear();
     }
 
@@ -371,7 +405,7 @@ public static class GeminiSseEncoder
            || string.Equals(chunk.AuthorRole, "thought", StringComparison.OrdinalIgnoreCase);
 
     private static readonly string[] ReasoningCandidates =
-        [ProviderUsageKeys.ReasoningTokens, "reasoning_tokens", "thoughtsTokenCount"];
+        [ChatTransitUsageKeys.ReasoningTokens, "reasoning_tokens", "thoughtsTokenCount"];
 
     private static int ResolveUsageLong(Dictionary<string, long> usage, int current, string[] keys)
     {

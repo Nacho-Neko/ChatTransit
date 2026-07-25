@@ -1,6 +1,6 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit;
+namespace ChatTransit;
 
 /// <summary>
 /// Protocol-neutral function tool definition.

@@ -1,7 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Gateway.Shared.ChatTransit.Gemini;
+namespace ChatTransit.Gemini;
 
 // ── Request: POST /v1beta/models/{model}:generateContent ─────────────────────
 
@@ -122,7 +122,7 @@ public class GenerateContentResponse
 
 public class Candidate
 {
-    [JsonPropertyName("content")] public GeminiContent Content { get; set; } = new();
+    [JsonPropertyName("content")][JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public GeminiContent? Content { get; set; }
     [JsonPropertyName("finishReason")][JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public string? FinishReason { get; set; }
     [JsonPropertyName("index")] public int Index { get; set; }
     [JsonPropertyName("safetyRatings")][JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] public List<SafetyRating>? SafetyRatings { get; set; }

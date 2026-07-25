@@ -1,6 +1,5 @@
-using Gateway.Shared.ChatTransit.Responses;
-using Gateway.Shared.Messaging.Serialization;
-using Gateway.Shared.Providers.Streaming;
+﻿using ChatTransit;
+using ChatTransit.Responses;
 using System.Text.Json;
 
 namespace ChatTransit.Tests.Roundtrip;

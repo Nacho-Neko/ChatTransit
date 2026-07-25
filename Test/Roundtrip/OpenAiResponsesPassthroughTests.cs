@@ -1,7 +1,7 @@
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.ChatTransit.Inbound;
-using Gateway.Shared.ChatTransit.Mapping;
-using Gateway.Shared.ChatTransit.Outbound;
+﻿using ChatTransit.Hints;
+using ChatTransit.Inbound;
+using ChatTransit.Mapping;
+using ChatTransit.Outbound;
 using Microsoft.Extensions.AI;
 using System.Text;
 using System.Text.Json;

@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit;
+﻿namespace ChatTransit;
 
 /// <summary>
 /// Unified error representation used internally within ChatTransit.

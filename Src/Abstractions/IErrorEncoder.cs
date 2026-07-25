@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit.Abstractions;
+﻿namespace ChatTransit.Abstractions;
 
 /// <summary>
 /// Maps a <see cref="TransitError"/> to the client-native HTTP error body and optional

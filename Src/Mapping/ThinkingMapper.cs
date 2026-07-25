@@ -1,6 +1,6 @@
-using Microsoft.Extensions.AI;
+﻿using Microsoft.Extensions.AI;
 
-namespace Gateway.Shared.ChatTransit.Mapping;
+namespace ChatTransit.Mapping;
 
 /// <summary>
 /// Handles the different ways each protocol exposes "thinking" / "reasoning" tokens

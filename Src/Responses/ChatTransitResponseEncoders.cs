@@ -1,8 +1,7 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Hints;
-using Gateway.Shared.Messaging.Serialization;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Hints;
 
-namespace Gateway.Shared.ChatTransit.Responses;
+namespace ChatTransit.Responses;
 
 /// <summary>
 /// DI-injectable wrapper for <see cref="OpenAiChatSseEncoder"/> that implements
@@ -19,7 +18,7 @@ public sealed class OpenAiChatResponseEncoder : IResponseSseEncoder, IResponseCo
         TransitRequest? requestContext = null, CancellationToken ct = default)
         => OpenAiChatSseEncoder.StreamAsync(chunks, model, ct);
 
-    public object Collect(IList<StreamingChunkDto> chunks, string model)
+    public object Collect(IReadOnlyList<StreamingChunkDto> chunks, string model)
         => OpenAiChatSseEncoder.CollectFromChunks(
             chunks as List<StreamingChunkDto> ?? chunks.ToList(), model);
 }
@@ -36,7 +35,7 @@ public sealed class OpenAiResponsesResponseEncoder : IResponseSseEncoder, IRespo
         TransitRequest? requestContext = null, CancellationToken ct = default)
         => OpenAiResponsesSseEncoder.StreamAsync(chunks, model, ct);
 
-    public object Collect(IList<StreamingChunkDto> chunks, string model)
+    public object Collect(IReadOnlyList<StreamingChunkDto> chunks, string model)
         => OpenAiResponsesSseEncoder.CollectFromChunks(
             chunks as List<StreamingChunkDto> ?? chunks.ToList(), model);
 }
@@ -53,7 +52,7 @@ public sealed class AnthropicResponseEncoder : IResponseSseEncoder, IResponseCol
         TransitRequest? requestContext = null, CancellationToken ct = default)
         => AnthropicSseEncoder.StreamAsync(chunks, model, ct);
 
-    public object Collect(IList<StreamingChunkDto> chunks, string model)
+    public object Collect(IReadOnlyList<StreamingChunkDto> chunks, string model)
         => AnthropicSseEncoder.CollectFromChunks(
             chunks as List<StreamingChunkDto> ?? chunks.ToList(), model);
 }
@@ -70,7 +69,7 @@ public sealed class GeminiResponseEncoder : IResponseSseEncoder, IResponseCollec
         TransitRequest? requestContext = null, CancellationToken ct = default)
         => GeminiSseEncoder.StreamSseAsync(chunks, ct);
 
-    public object Collect(IList<StreamingChunkDto> chunks, string model)
+    public object Collect(IReadOnlyList<StreamingChunkDto> chunks, string model)
         => GeminiSseEncoder.CollectFromChunks(chunks is List<StreamingChunkDto> list
             ? list : chunks.ToList());
 }

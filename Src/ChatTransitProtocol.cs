@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit;
+﻿namespace ChatTransit;
 
 /// <summary>
 /// Identifies the wire protocol a client request arrives in, or the format a backend expects.

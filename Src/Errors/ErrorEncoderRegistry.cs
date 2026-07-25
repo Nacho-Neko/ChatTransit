@@ -1,6 +1,6 @@
-using Gateway.Shared.ChatTransit.Abstractions;
+﻿using ChatTransit.Abstractions;
 
-namespace Gateway.Shared.ChatTransit.Errors;
+namespace ChatTransit.Errors;
 
 /// <summary>
 /// Resolves <see cref="IErrorEncoder"/> instances by <see cref="ChatTransitProtocol"/>

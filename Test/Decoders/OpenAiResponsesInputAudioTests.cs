@@ -1,4 +1,4 @@
-using Gateway.Shared.ChatTransit.Inbound;
+﻿using ChatTransit.Inbound;
 using Microsoft.Extensions.AI;
 using System.Text;
 

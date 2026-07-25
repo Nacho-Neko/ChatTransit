@@ -1,4 +1,4 @@
-namespace Gateway.Shared.ChatTransit.Mapping;
+﻿namespace ChatTransit.Mapping;
 
 /// <summary>
 /// Centralises the protocol-vs-IR scale conversion for sampling parameters

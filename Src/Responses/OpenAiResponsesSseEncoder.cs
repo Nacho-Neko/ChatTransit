@@ -1,10 +1,9 @@
-using Gateway.Shared.ChatTransit.Mapping;
-using Gateway.Shared.Messaging.Serialization;
+﻿using ChatTransit.Mapping;
 using MessagePack;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 
-namespace Gateway.Shared.ChatTransit.Responses;
+namespace ChatTransit.Responses;
 
 /// <summary>
 /// Converts <see cref="StreamingChunkDto"/> events into OpenAI Responses API
@@ -406,9 +405,12 @@ public static class OpenAiResponsesSseEncoder
             }
             : null;
 
-        yield return Emit("response.completed", new
+        // An incomplete turn must terminate with response.incomplete (not
+        // response.completed); the response.status inside stays consistent.
+        var terminalEvent = status == "incomplete" ? "response.incomplete" : "response.completed";
+        yield return Emit(terminalEvent, new
         {
-            type = "response.completed",
+            type = terminalEvent,
             sequence_number = seq,
             response = BuildResponseShell(responseId, model, status, finalOutput,
                 incompleteReason, null,
@@ -487,6 +489,7 @@ public static class OpenAiResponsesSseEncoder
             var reasoningItem = new Dictionary<string, object?>
             {
                 ["type"] = "reasoning",
+                ["id"] = $"rs_{Guid.NewGuid():N}",
                 ["summary"] = new[] { new { type = "summary_text", text = reasoningBuffer.ToString() } }
             };
             // Carry the opaque signature back so an OpenAI Responses caller can
@@ -497,9 +500,18 @@ public static class OpenAiResponsesSseEncoder
         }
         if (contentBuffer.Length > 0 || toolCalls.Count == 0)
         {
-            var outputContent = new List<object>();
-            outputContent.Add(new { type = "output_text", text = contentBuffer.ToString() });
-            output.Add(new { type = "message", role = "assistant", content = outputContent });
+            var outputContent = new List<object>
+            {
+                new { type = "output_text", text = contentBuffer.ToString(), annotations = Array.Empty<object>() }
+            };
+            output.Add(new Dictionary<string, object?>
+            {
+                ["type"] = "message",
+                ["id"] = $"msg_{Guid.NewGuid():N}",
+                ["status"] = "completed",
+                ["role"] = "assistant",
+                ["content"] = outputContent
+            });
         }
         output.AddRange(toolCalls);
 
@@ -513,14 +525,14 @@ public static class OpenAiResponsesSseEncoder
             _ => "completed"
         };
 
-        return new
+        return new Dictionary<string, object?>
         {
-            id = responseId,
-            @object = "response",
-            status,
-            model,
-            output,
-            incomplete_details = status == "incomplete"
+            ["id"] = responseId,
+            ["object"] = "response",
+            ["created_at"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ["status"] = status,
+            ["error"] = null,
+            ["incomplete_details"] = status == "incomplete"
                 ? new
                 {
                     reason = StopReasonMapper.ToIr(upstreamFinishReason) switch
@@ -531,7 +543,14 @@ public static class OpenAiResponsesSseEncoder
                     }
                 }
                 : null,
-            usage = new
+            ["instructions"] = null,
+            ["metadata"] = new Dictionary<string, object?>(),
+            ["model"] = model,
+            ["output"] = output,
+            ["parallel_tool_calls"] = true,
+            ["tool_choice"] = "auto",
+            ["tools"] = Array.Empty<object>(),
+            ["usage"] = new
             {
                 input_tokens = promptTokens,
                 output_tokens = completionTokens,
@@ -558,9 +577,17 @@ public static class OpenAiResponsesSseEncoder
         {
             ["id"] = id,
             ["object"] = "response",
+            ["created_at"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
             ["status"] = status,
+            ["error"] = error,
+            ["incomplete_details"] = incompleteReason != null ? new { reason = incompleteReason } : null,
+            ["instructions"] = null,
+            ["metadata"] = new Dictionary<string, object?>(),
             ["model"] = model,
             ["output"] = output,
+            ["parallel_tool_calls"] = true,
+            ["tool_choice"] = "auto",
+            ["tools"] = Array.Empty<object>(),
             ["usage"] = new
             {
                 input_tokens = promptTokens,
@@ -570,10 +597,6 @@ public static class OpenAiResponsesSseEncoder
                 output_tokens_details = outputDetails
             }
         };
-        if (incompleteReason != null)
-            shell["incomplete_details"] = new { reason = incompleteReason };
-        if (error != null)
-            shell["error"] = error;
         return shell;
     }
 

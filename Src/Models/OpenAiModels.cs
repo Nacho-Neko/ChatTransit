@@ -1,7 +1,7 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Gateway.Shared.ChatTransit.OpenAi;
+namespace ChatTransit.OpenAi;
 
 // ── Model listing (GET /v1/models) ────────────────────────────────────────────
 
@@ -113,5 +113,7 @@ public class OpenAiError
 {
     [JsonPropertyName("message")] public string Message { get; set; } = "";
     [JsonPropertyName("type")] public string Type { get; set; } = "";
+    // Emitted even when null — OpenAI's error object always carries a "param" key.
+    [JsonPropertyName("param")] public object? Param { get; set; }
     [JsonPropertyName("code")] public object? Code { get; set; }
 }

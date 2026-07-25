@@ -1,6 +1,6 @@
-using Gateway.Shared.ChatTransit;
-using Gateway.Shared.ChatTransit.Inbound;
-using Gateway.Shared.ChatTransit.Outbound;
+﻿using ChatTransit;
+using ChatTransit.Inbound;
+using ChatTransit.Outbound;
 using Microsoft.Extensions.AI;
 using System.Text.Json;
 
@@ -179,7 +179,7 @@ public class CrossProtocolRoundTripTests
         var bytes = FixtureLoader.LoadBytes("anthropic_thinking.json");
         var transit = new AnthropicInboundDecoder().Decode(bytes);
 
-        transit.Hints.Should().ContainKey(Gateway.Shared.ChatTransit.Hints.AnthropicHints.IsThinkingModel);
+        transit.Hints.Should().ContainKey(ChatTransit.Hints.AnthropicHints.IsThinkingModel);
 
         var encoded = new GeminiOutboundEncoder().Encode(transit);
         var doc = JsonDocument.Parse(encoded);
@@ -426,14 +426,14 @@ public class CrossProtocolRoundTripTests
 
     private static ChatTransitRegistry BuildRegistry()
     {
-        var decoders = new Gateway.Shared.ChatTransit.Abstractions.IRequestDecoder[]
+        var decoders = new ChatTransit.Abstractions.IRequestDecoder[]
         {
             new OpenAiChatInboundDecoder(),
             new OpenAiResponsesInboundDecoder(),
             new AnthropicInboundDecoder(),
             new GeminiInboundDecoder(),
         };
-        var encoders = new Gateway.Shared.ChatTransit.Abstractions.IRequestEncoder[]
+        var encoders = new ChatTransit.Abstractions.IRequestEncoder[]
         {
             new OpenAiChatOutboundEncoder(),
             new OpenAiResponsesOutboundEncoder(),
