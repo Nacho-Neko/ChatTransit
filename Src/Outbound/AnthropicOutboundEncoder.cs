@@ -282,10 +282,20 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         {
             var role = msg.Role == ChatRole.Assistant ? "assistant" : "user";
             var blocks = BuildContent(msg.Contents);
-            // A message with no renderable content blocks is dropped rather than
-            // padded with a "." placeholder, which would alter the conversation's
-            // semantics. (Anthropic requires each message's content to be non-empty.)
-            if (blocks.Count == 0) continue;
+
+            // A message can map to zero blocks: empty text, a data part this
+            // encoder has no block shape for, or one the inbound decoder rejected.
+            // Dropping the turn would silently change the SHAPE of the
+            // conversation, and Anthropic validates shape: roles must alternate,
+            // and the newest Opus models reject a conversation ending on an
+            // assistant turn ("This model does not support assistant message
+            // prefill."). Losing one user turn is therefore enough to turn a valid
+            // request into a rejected one. Keep the role slot with the same minimal
+            // placeholder AnthropicChannel uses — the API rejects empty content, so
+            // an empty block is not an option — and let the target side normalise
+            // it deliberately.
+            if (blocks.Count == 0)
+                blocks.Add(BuildPlaceholderTextBlock());
 
             // Use string shorthand only when there's a single plain text block
             // AND no cache_control / other metadata on it.
@@ -360,6 +370,14 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         AttachCacheControl(block, content);
         return block;
     }
+
+    /// <summary>
+    /// Minimal non-empty text block used to keep a role slot that mapped to no
+    /// content. Matches the placeholder <c>AnthropicChannel</c> pads with, so a
+    /// turn that survives a transcode looks the same as one parsed natively.
+    /// </summary>
+    private static object BuildPlaceholderTextBlock() =>
+        new Dictionary<string, object?> { ["type"] = "text", ["text"] = "." };
 
     private static object BuildTextBlock(TextContent tc)
     {

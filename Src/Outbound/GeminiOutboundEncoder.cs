@@ -156,8 +156,21 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
         {
             var role = msg.Role == ChatRole.Assistant ? "model" : "user";
             var parts = BuildParts(msg.Contents, callNames);
-            if (parts.Count > 0)
-                result.Add(new { role, parts });
+
+            // A message can map to zero parts: empty/whitespace text, an image
+            // whose base64 the inbound decoder rejected, or a content type this
+            // encoder has no part shape for. Dropping the turn would silently
+            // change the SHAPE of the conversation, and Gemini validates shape:
+            // the last non-empty turn may not be `model` (Gemini 3+ answers a
+            // trailing model turn with 400 "Requests ending with a model turn
+            // are not supported."). Losing the final user turn is therefore
+            // enough to turn a perfectly valid request into a rejected prefill.
+            // Keep the role slot with an explicit empty part so the loss stays
+            // visible and the target side can normalise it deliberately.
+            if (parts.Count == 0)
+                parts.Add(new { text = "" });
+
+            result.Add(new { role, parts });
         }
         return result;
     }
