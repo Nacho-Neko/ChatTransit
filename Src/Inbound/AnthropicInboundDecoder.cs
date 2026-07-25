@@ -324,16 +324,23 @@ public sealed class AnthropicInboundDecoder : IRequestDecoder
 
     private static void ApplyScalars(JsonElement root, ChatOptions options)
     {
-        if (root.TryGetProperty("max_tokens", out var mt) && mt.TryGetInt32(out var mti))
+        // Guard on JsonValueKind.Number first — TryGetInt32/TryGetDouble throw
+        // InvalidOperationException when the field is present but explicitly null
+        // (or any non-number), which clients routinely send.
+        if (root.TryGetProperty("max_tokens", out var mt) && mt.ValueKind == JsonValueKind.Number
+            && mt.TryGetInt32(out var mti))
             options.MaxOutputTokens = mti;
         // Anthropic's wire scale is [0, 1] but the IR convention is [0, 2]
         // (OpenAI/Gemini-aligned). Rescale ×2 so cross-protocol traffic to
         // OpenAI/Gemini gets the semantically equivalent value.
-        if (root.TryGetProperty("temperature", out var temp) && temp.TryGetDouble(out var t))
+        if (root.TryGetProperty("temperature", out var temp) && temp.ValueKind == JsonValueKind.Number
+            && temp.TryGetDouble(out var t))
             options.Temperature = SamplingScaleMapper.NormalizeTemperatureFromAnthropic((float)t);
-        if (root.TryGetProperty("top_p", out var tp) && tp.TryGetDouble(out var tpv))
+        if (root.TryGetProperty("top_p", out var tp) && tp.ValueKind == JsonValueKind.Number
+            && tp.TryGetDouble(out var tpv))
             options.TopP = SamplingScaleMapper.ClampTopP((float)tpv);
-        if (root.TryGetProperty("top_k", out var tk) && tk.TryGetInt32(out var tkv))
+        if (root.TryGetProperty("top_k", out var tk) && tk.ValueKind == JsonValueKind.Number
+            && tk.TryGetInt32(out var tkv))
             options.TopK = SamplingScaleMapper.ClampTopK(tkv);
         if (root.TryGetProperty("stop_sequences", out var ss) && ss.ValueKind == JsonValueKind.Array)
         {

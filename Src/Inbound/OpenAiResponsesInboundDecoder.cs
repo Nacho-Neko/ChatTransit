@@ -400,15 +400,23 @@ public sealed class OpenAiResponsesInboundDecoder : IRequestDecoder
 
     private static void ApplyScalars(JsonElement root, ChatOptions options)
     {
-        if (root.TryGetProperty("temperature", out var temp) && temp.TryGetDouble(out var t))
+        // Guard on JsonValueKind.Number first — TryGetDouble/TryGetInt32 throw
+        // InvalidOperationException when the field is present but explicitly null
+        // (or any non-number), which clients routinely send.
+        if (root.TryGetProperty("temperature", out var temp) && temp.ValueKind == JsonValueKind.Number
+            && temp.TryGetDouble(out var t))
             options.Temperature = SamplingScaleMapper.ClampTemperatureForOpenAiScale((float)t);
-        if (root.TryGetProperty("top_p", out var topP) && topP.TryGetDouble(out var tp))
+        if (root.TryGetProperty("top_p", out var topP) && topP.ValueKind == JsonValueKind.Number
+            && topP.TryGetDouble(out var tp))
             options.TopP = SamplingScaleMapper.ClampTopP((float)tp);
-        if (root.TryGetProperty("max_output_tokens", out var mo) && mo.TryGetInt32(out var moi))
+        if (root.TryGetProperty("max_output_tokens", out var mo) && mo.ValueKind == JsonValueKind.Number
+            && mo.TryGetInt32(out var moi))
             options.MaxOutputTokens = moi;
-        if (root.TryGetProperty("frequency_penalty", out var fp) && fp.TryGetDouble(out var fpv))
+        if (root.TryGetProperty("frequency_penalty", out var fp) && fp.ValueKind == JsonValueKind.Number
+            && fp.TryGetDouble(out var fpv))
             options.FrequencyPenalty = (float)Math.Clamp(fpv, -2.0, 2.0);
-        if (root.TryGetProperty("presence_penalty", out var pp) && pp.TryGetDouble(out var ppv))
+        if (root.TryGetProperty("presence_penalty", out var pp) && pp.ValueKind == JsonValueKind.Number
+            && pp.TryGetDouble(out var ppv))
             options.PresencePenalty = (float)Math.Clamp(ppv, -2.0, 2.0);
     }
 

@@ -279,14 +279,21 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
         if (!root.TryGetProperty("generationConfig", out var gc) || gc.ValueKind != JsonValueKind.Object)
             return;
 
+        // Guard on JsonValueKind.Number first — TryGetInt32/TryGetInt64/TryGetDouble
+        // throw InvalidOperationException when the field is present but explicitly
+        // null (or any non-number), which clients routinely send.
         // Gemini 1.5+/2.x temperature is [0, 2] ? same as the IR convention.
-        if (gc.TryGetProperty("temperature", out var temp) && temp.TryGetDouble(out var t))
+        if (gc.TryGetProperty("temperature", out var temp) && temp.ValueKind == JsonValueKind.Number
+            && temp.TryGetDouble(out var t))
             options.Temperature = SamplingScaleMapper.ClampTemperatureForOpenAiScale((float)t);
-        if (gc.TryGetProperty("topP", out var topP) && topP.TryGetDouble(out var tp))
+        if (gc.TryGetProperty("topP", out var topP) && topP.ValueKind == JsonValueKind.Number
+            && topP.TryGetDouble(out var tp))
             options.TopP = SamplingScaleMapper.ClampTopP((float)tp);
-        if (gc.TryGetProperty("topK", out var topK) && topK.TryGetInt32(out var tkv))
+        if (gc.TryGetProperty("topK", out var topK) && topK.ValueKind == JsonValueKind.Number
+            && topK.TryGetInt32(out var tkv))
             options.TopK = SamplingScaleMapper.ClampTopK(tkv);
-        if (gc.TryGetProperty("maxOutputTokens", out var mo) && mo.TryGetInt32(out var moi))
+        if (gc.TryGetProperty("maxOutputTokens", out var mo) && mo.ValueKind == JsonValueKind.Number
+            && mo.TryGetInt32(out var moi))
             options.MaxOutputTokens = moi;
         if (gc.TryGetProperty("stopSequences", out var ss) && ss.ValueKind == JsonValueKind.Array)
         {
@@ -295,11 +302,14 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                 .Select(x => x.GetString()!)
                 .ToList();
         }
-        if (gc.TryGetProperty("seed", out var seed) && seed.TryGetInt64(out var seedVal))
+        if (gc.TryGetProperty("seed", out var seed) && seed.ValueKind == JsonValueKind.Number
+            && seed.TryGetInt64(out var seedVal))
             options.Seed = seedVal;
-        if (gc.TryGetProperty("presencePenalty", out var pp) && pp.TryGetDouble(out var ppv))
+        if (gc.TryGetProperty("presencePenalty", out var pp) && pp.ValueKind == JsonValueKind.Number
+            && pp.TryGetDouble(out var ppv))
             options.PresencePenalty = (float)Math.Clamp(ppv, -2.0, 2.0);
-        if (gc.TryGetProperty("frequencyPenalty", out var fp) && fp.TryGetDouble(out var fpv))
+        if (gc.TryGetProperty("frequencyPenalty", out var fp) && fp.ValueKind == JsonValueKind.Number
+            && fp.TryGetDouble(out var fpv))
             options.FrequencyPenalty = (float)Math.Clamp(fpv, -2.0, 2.0);
     }
 
@@ -412,11 +422,13 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                 hints[GeminiHints.ResponseJsonSchema] = rjs.Clone();
             if (gc.TryGetProperty("responseModalities", out var rm) && rm.ValueKind == JsonValueKind.Array)
                 hints[GeminiHints.ResponseModalities] = rm.Clone();
-            if (gc.TryGetProperty("candidateCount", out var cn) && cn.TryGetInt32(out var cnv))
+            if (gc.TryGetProperty("candidateCount", out var cn) && cn.ValueKind == JsonValueKind.Number
+                && cn.TryGetInt32(out var cnv))
                 hints[GeminiHints.CandidateCount] = cnv;
             if (gc.TryGetProperty("responseLogprobs", out var rl) && rl.ValueKind == JsonValueKind.True)
                 hints[GeminiHints.ResponseLogprobs] = true;
-            if (gc.TryGetProperty("logprobs", out var lp) && lp.TryGetInt32(out var lpv))
+            if (gc.TryGetProperty("logprobs", out var lp) && lp.ValueKind == JsonValueKind.Number
+                && lp.TryGetInt32(out var lpv))
                 hints[GeminiHints.Logprobs] = lpv;
             if (gc.TryGetProperty("audioTimestamp", out var at) && at.ValueKind == JsonValueKind.True)
                 hints[GeminiHints.AudioTimestamp] = true;
@@ -428,6 +440,7 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                 && thinking.ValueKind == JsonValueKind.Object)
             {
                 if (thinking.TryGetProperty("thinkingBudget", out var budget)
+                    && budget.ValueKind == JsonValueKind.Number
                     && budget.TryGetInt32(out var budgetVal))
                     hints[GeminiHints.ThinkingBudget] = budgetVal;
                 if (thinking.TryGetProperty("thinkingLevel", out var lvl)
