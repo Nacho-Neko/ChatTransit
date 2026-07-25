@@ -1,4 +1,4 @@
-# ChatTransit
+﻿# ChatTransit
 
 ChatTransit is a .NET 10 library for translating chat completion requests and responses between the wire formats used by OpenAI Chat Completions, OpenAI Responses, Anthropic Messages, and Google Gemini.
 
@@ -31,7 +31,7 @@ The library decodes an inbound provider-specific request into a canonical `Trans
 Register ChatTransit services:
 
 ```csharp
-using Gateway.Shared.ChatTransit;
+using ChatTransit;
 
 services.AddChatTransit();
 ```
@@ -61,7 +61,9 @@ dotnet build .\ChatTransit.slnx
 dotnet test .\Test\ChatTransit.Tests.csproj
 ```
 
-The source project currently references sibling workspace projects for shared gateway DTOs and raw provider SDK projects. If this folder is moved outside `src/Shared`, update the `ProjectReference` paths in `Src/ChatTransit.csproj`.
+ChatTransit is a pure protocol translator with **zero project references** — not to `Gateway.Shared` (NATS/Consul/Redis/SemanticKernel dispatch plumbing), not to `OneApi.Common`, not to any raw provider SDK project. It only depends on NuGet packages (`MessagePack`, `Microsoft.Extensions.AI.Abstractions`, `Microsoft.Extensions.DependencyInjection.Abstractions`), so it never knows anything about the platform it happens to be embedded in — this is also why it can be vendored wholesale into a completely separate repository (see `Meeko.Demux/Common/ChatTransit`) with no source changes.
+
+`StreamingChunkDto` / `StreamingContentType` (`Src/StreamingChunkDto.cs`) and the usage-key constants response decoders/encoders share (`Src/Mapping/ChatTransitUsageKeys.cs`) are ChatTransit's own types, not borrowed from a sibling project. Callers that need to cross into a platform-specific representation (e.g. a NATS dispatch-transport chunk, or a different `StreamingChunkDto` used elsewhere in the host platform) own a small field-by-field mapping at their integration boundary — see `CompatWorker.ToTransitChunk` in OneApi's `CompatProvider`, or `TransitChunkMapper` in `Meeko.Demux`'s `Demux.Gateway`. That mapping is platform plumbing, not protocol translation, so it does not belong in this library.
 
 ## License
 
