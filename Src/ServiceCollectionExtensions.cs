@@ -1,12 +1,12 @@
-using Gateway.Shared.ChatTransit.Abstractions;
-using Gateway.Shared.ChatTransit.Errors;
-using Gateway.Shared.ChatTransit.Inbound;
-using Gateway.Shared.ChatTransit.Outbound;
-using Gateway.Shared.ChatTransit.Responses;
+﻿using ChatTransit.Abstractions;
+using ChatTransit.Errors;
+using ChatTransit.Inbound;
+using ChatTransit.Outbound;
+using ChatTransit.Responses;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace Gateway.Shared.ChatTransit;
+namespace ChatTransit;
 
 /// <summary>
 /// Extension methods to register ChatTransit services into the DI container.
@@ -43,6 +43,20 @@ public static class ServiceCollectionExtensions
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseCollector, AnthropicResponseEncoder>());
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseCollector, GeminiResponseEncoder>());
 
+        // Response SSE decoders (native provider SSE → StreamingChunkDto). Only
+        // exercised by the edge (Demux.Gateway) for genuinely cross-protocol calls —
+        // same-protocol raw passthrough never touches these.
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseSseDecoder, OpenAiChatResponseDecoder>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseSseDecoder, OpenAiResponsesResponseDecoder>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseSseDecoder, AnthropicResponseDecoder>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseSseDecoder, GeminiResponseDecoder>());
+
+        // Response JSON decoders (native non-streaming body → StreamingChunkDto)
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseJsonDecoder, OpenAiChatResponseDecoder>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseJsonDecoder, OpenAiResponsesResponseDecoder>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseJsonDecoder, AnthropicResponseDecoder>());
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IResponseJsonDecoder, GeminiResponseDecoder>());
+
         // Error encoders (TransitError → native error body / SSE)
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IErrorEncoder, OpenAiErrorEncoder>(
             _ => new OpenAiErrorEncoder(ChatTransitProtocol.OpenAiChat)));
@@ -53,6 +67,7 @@ public static class ServiceCollectionExtensions
         // Registries as singletons
         services.TryAddSingleton<ChatTransitRegistry>();
         services.TryAddSingleton<ResponseEncoderRegistry>();
+        services.TryAddSingleton<ResponseDecoderRegistry>();
         services.TryAddSingleton<ErrorEncoderRegistry>();
 
         return services;
