@@ -53,50 +53,42 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         // Anthropic wire scale is [0, 1] while the IR is [0, 2]; SamplingScaleMapper
         // ÷2 here mirrors the ×2 in the decoder. Without it an OpenAI caller
         // sending temperature=1.5 would get a 422 from Anthropic.
+        //
+        // Claude 4.7+ / Sonnet 5 / Opus 5 REJECT temperature/top_p/top_k with a 400
+        // (the params are unsupported on modern models, thinking or not). Only emit
+        // them for legacy models (≤ 4.6) or when the model can't be identified.
         var opts = request.Options;
+        var isModern = ModelCapabilities.IsModernAnthropic(request.Model);
         body["max_tokens"] = opts.MaxOutputTokens ?? 4096;
-        if (opts.Temperature.HasValue)
-            body["temperature"] = SamplingScaleMapper.DenormalizeTemperatureToAnthropic(opts.Temperature.Value);
-        if (opts.TopP.HasValue) body["top_p"] = SamplingScaleMapper.ClampTopP(opts.TopP.Value);
-        if (opts.TopK.HasValue) body["top_k"] = SamplingScaleMapper.ClampTopK(opts.TopK.Value);
+        if (!isModern)
+        {
+            if (opts.Temperature.HasValue)
+                body["temperature"] = SamplingScaleMapper.DenormalizeTemperatureToAnthropic(opts.Temperature.Value);
+            if (opts.TopP.HasValue) body["top_p"] = SamplingScaleMapper.ClampTopP(opts.TopP.Value);
+            if (opts.TopK.HasValue) body["top_k"] = SamplingScaleMapper.ClampTopK(opts.TopK.Value);
+        }
         if (opts.StopSequences is { Count: > 0 }) body["stop_sequences"] = opts.StopSequences;
 
         // ── Thinking config ───────────────────────────────────────────────────
-        // Extended thinking forbids temperature/top_p/top_k overrides; strip
-        // and inject thinking.budget_tokens. Cross-protocol: OpenAI's
-        // `reasoning_effort` (or Gemini `thinkingLevel`) implicitly turns
-        // thinking on with a corresponding budget.
+        // Cross-protocol: OpenAI's `reasoning_effort` (or Gemini `thinkingLevel`)
+        // implicitly turns thinking on. Modern models (Claude 4.7+) require
+        // `thinking:{type:"adaptive"}` and reject `enabled`; legacy models (≤ 4.6)
+        // are the opposite. BuildThinkingBlock picks the right shape per generation.
         var effortBudget = MapReasoningEffortToBudget(request.Hints);
         var isThinking = (request.Hints.TryGetValue(AnthropicHints.IsThinkingModel, out var itv)
                           && itv is true)
                          || effortBudget.HasValue;
         if (isThinking)
         {
+            // Modern models don't accept manual sampling; legacy extended thinking
+            // forbids it. Either way, strip.
             body.Remove("temperature");
             body.Remove("top_p");
             body.Remove("top_k");
 
-            object thinkingBlock;
-            if (request.Hints.TryGetValue(AnthropicHints.ThinkingConfig, out var tcfg)
-                && tcfg is JsonElement tcfgEl
-                && tcfgEl.ValueKind == JsonValueKind.Object)
-            {
-                thinkingBlock = tcfgEl;
-            }
-            else if (effortBudget.HasValue)
-            {
-                var maxTok = (int)(opts.MaxOutputTokens ?? Math.Max(effortBudget.Value + 1024, 4096));
-                if (maxTok <= effortBudget.Value) { maxTok = effortBudget.Value + 1024; body["max_tokens"] = maxTok; }
-                thinkingBlock = new { type = "enabled", budget_tokens = (long)effortBudget.Value };
-            }
-            else
-            {
-                var maxTok = (int)(opts.MaxOutputTokens ?? 4096);
-                if (maxTok < 16384) { maxTok = 16384; body["max_tokens"] = maxTok; }
-                var budget = (long)Math.Clamp(maxTok * 3 / 4, 1024, maxTok - 1);
-                thinkingBlock = new { type = "enabled", budget_tokens = budget };
-            }
-            body["thinking"] = thinkingBlock;
+            body["thinking"] = isModern
+                ? BuildAdaptiveThinkingBlock(request.Hints)
+                : BuildLegacyThinkingBlock(request.Hints, opts, body, effortBudget);
         }
 
         // ── Tools ─────────────────────────────────────────────────────────────
@@ -160,9 +152,12 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
     /// <summary>
     /// Folds OpenAI's <c>reasoning_effort</c> / Gemini <c>thinkingLevel</c> /
     /// Gemini <c>thinkingBudget</c> into a concrete token budget for Anthropic's
-    /// <c>thinking.budget_tokens</c>. Returns null when no caller-side reasoning
-    /// hint is present. The mapping mirrors OpenAI's published guidance —
-    /// <c>minimal</c> ≈ 1k, <c>low</c> ≈ 4k, <c>medium</c> ≈ 8k, <c>high</c> ≈ 16k.
+    /// legacy <c>thinking.budget_tokens</c>, and doubles as the "is thinking on?"
+    /// signal for cross-protocol requests. Returns null when no caller-side
+    /// reasoning hint is present, or for <c>none</c> (explicit disable). See
+    /// <see cref="ReasoningEffortMapper.EffortToBudget"/> for the ladder (now incl.
+    /// the newer <c>xhigh</c>/<c>max</c> tiers, which previously fell through to
+    /// null and silently disabled thinking).
     /// </summary>
     private static int? MapReasoningEffortToBudget(IReadOnlyDictionary<string, object?> hints)
     {
@@ -173,17 +168,56 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
             effort = reStr;
         else if (hints.TryGetValue(Hints.GeminiHints.ThinkingLevel, out var tl) && tl is string tlStr)
             effort = tlStr;
-        return effort?.ToLowerInvariant() switch
+        return ReasoningEffortMapper.EffortToBudget(effort);
+    }
+
+    /// <summary>
+    /// Builds the <c>thinking</c> block for a modern model (Claude 4.7+), which
+    /// requires <c>{type:"adaptive"}</c> and rejects <c>enabled</c>+budget. An
+    /// Anthropic→Anthropic passthrough that is already <c>adaptive</c> is preserved
+    /// verbatim; anything else (a legacy <c>enabled</c> config, or a cross-protocol
+    /// effort/budget) collapses to the minimal adaptive block.
+    /// </summary>
+    private static object BuildAdaptiveThinkingBlock(IReadOnlyDictionary<string, object?> hints)
+    {
+        if (hints.TryGetValue(AnthropicHints.ThinkingConfig, out var tcfg)
+            && tcfg is JsonElement el && el.ValueKind == JsonValueKind.Object
+            && el.TryGetProperty("type", out var t) && t.GetString() == "adaptive")
+            return el;
+        return new Dictionary<string, object?> { ["type"] = "adaptive" };
+    }
+
+    /// <summary>
+    /// Builds the <c>thinking</c> block for a legacy model (≤ 4.6), which uses
+    /// <c>{type:"enabled", budget_tokens:N}</c>. An Anthropic→Anthropic passthrough
+    /// is preserved verbatim unless it is <c>adaptive</c> (which a legacy model
+    /// rejects) — in that case it is synthesized into an <c>enabled</c> block.
+    /// May raise <c>max_tokens</c> so the budget fits.
+    /// </summary>
+    private static object BuildLegacyThinkingBlock(
+        IReadOnlyDictionary<string, object?> hints, ChatOptions opts,
+        Dictionary<string, object?> body, int? effortBudget)
+    {
+        if (hints.TryGetValue(AnthropicHints.ThinkingConfig, out var tcfg)
+            && tcfg is JsonElement tcfgEl && tcfgEl.ValueKind == JsonValueKind.Object)
         {
-            // "none" explicitly means "disable reasoning" — it must NOT turn thinking
-            // on (returns null so no budget/thinking config is injected and temperature
-            // is not stripped). "minimal" still maps to a small budget.
-            "minimal" => 1024,
-            "low" => 4096,
-            "medium" => 8192,
-            "high" => 16384,
-            _ => null
-        };
+            var type = tcfgEl.TryGetProperty("type", out var tt) ? tt.GetString() : null;
+            if (type != "adaptive")
+                return tcfgEl; // enabled/disabled passthrough (same-generation A→A)
+            // adaptive config routed onto a legacy target — fall through to synthesize.
+        }
+
+        if (effortBudget.HasValue)
+        {
+            var maxTok = (int)(opts.MaxOutputTokens ?? Math.Max(effortBudget.Value + 1024, 4096));
+            if (maxTok <= effortBudget.Value) { maxTok = effortBudget.Value + 1024; body["max_tokens"] = maxTok; }
+            return new Dictionary<string, object?> { ["type"] = "enabled", ["budget_tokens"] = (long)effortBudget.Value };
+        }
+
+        var mt = (int)(opts.MaxOutputTokens ?? 4096);
+        if (mt < 16384) { mt = 16384; body["max_tokens"] = mt; }
+        var budget = (long)Math.Clamp(mt * 3 / 4, 1024, mt - 1);
+        return new Dictionary<string, object?> { ["type"] = "enabled", ["budget_tokens"] = budget };
     }
 
     /// <summary>

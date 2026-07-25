@@ -320,7 +320,9 @@ public class CrossProtocolRoundTripTests
     public void Anthropic_Temperature_RoundTrip_IsLossless_WithinPrecision()
     {
         // Round-trip through IR: Anthropic 0.42 → IR 0.84 → Anthropic 0.42.
-        var json = """{"model":"claude-opus-4-7","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"temperature":0.42}""";
+        // Uses a legacy model (≤ 4.6): temperature is only emitted for legacy
+        // targets — Claude 4.7+ rejects it, see Modern_Anthropic_* tests below.
+        var json = """{"model":"claude-3-5-sonnet-20241022","max_tokens":64,"messages":[{"role":"user","content":"hi"}],"temperature":0.42}""";
         var transit = new AnthropicInboundDecoder().Decode(System.Text.Encoding.UTF8.GetBytes(json));
         var encoded = new AnthropicOutboundEncoder().Encode(transit);
         var doc = JsonDocument.Parse(encoded);

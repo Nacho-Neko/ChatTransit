@@ -58,15 +58,19 @@ public class ReasoningEffortRoundtripTests
     }
 
     [Theory]
-    [InlineData("minimal", "low")]
+    [InlineData("minimal", "minimal")]
     [InlineData("low", "low")]
     [InlineData("medium", "medium")]
     [InlineData("high", "high")]
+    [InlineData("xhigh", "high")]  // newer tiers clamp to the highest valid Gemini level
+    [InlineData("max", "high")]
     public void OpenAiChat_ReasoningEffort_To_Gemini_ThinkingLevel(string effort, string expectedLevel)
     {
+        // The gateway rewrites the body's model to the upstream target before
+        // transcoding, so a Gemini-bound request carries a gemini-3 model id here.
         var json = """
         {
-          "model": "gpt-5",
+          "model": "gemini-3-pro",
           "messages": [{"role": "user", "content": "hi"}],
           "reasoning_effort": "__EFFORT__"
         }
@@ -76,6 +80,31 @@ public class ReasoningEffortRoundtripTests
         using var doc = JsonDocument.Parse(encoded);
         var thinking = doc.RootElement.GetProperty("generationConfig").GetProperty("thinkingConfig");
         thinking.GetProperty("thinkingLevel").GetString().Should().Be(expectedLevel);
+        // Never emit both thinkingLevel and thinkingBudget (that's a 400).
+        thinking.TryGetProperty("thinkingBudget", out _).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("minimal", 1024)]
+    [InlineData("low", 4096)]
+    [InlineData("medium", 8192)]
+    [InlineData("high", 16384)]
+    public void OpenAiChat_ReasoningEffort_To_Gemini25_ThinkingBudget(string effort, int expectedBudget)
+    {
+        // A Gemini 2.5 target takes the legacy thinkingBudget, never thinkingLevel.
+        var json = """
+        {
+          "model": "gemini-2.5-flash",
+          "messages": [{"role": "user", "content": "hi"}],
+          "reasoning_effort": "__EFFORT__"
+        }
+        """.Replace("__EFFORT__", effort);
+        var transit = new OpenAiChatInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new GeminiOutboundEncoder().Encode(transit);
+        using var doc = JsonDocument.Parse(encoded);
+        var thinking = doc.RootElement.GetProperty("generationConfig").GetProperty("thinkingConfig");
+        thinking.GetProperty("thinkingBudget").GetInt32().Should().Be(expectedBudget);
+        thinking.TryGetProperty("thinkingLevel", out _).Should().BeFalse();
     }
 
     [Fact]

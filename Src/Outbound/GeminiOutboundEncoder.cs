@@ -428,27 +428,52 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
         if (request.Hints.TryGetValue(GeminiHints.SpeechConfig, out var sc) && sc is JsonElement scEl)
             gc["speechConfig"] = scEl;
 
-        var thinkingCfg = new Dictionary<string, object?>();
-        if (request.Hints.TryGetValue(GeminiHints.ThinkingBudget, out var tb) && tb is int tbVal)
-            thinkingCfg["thinkingBudget"] = tbVal;
-        if (request.Hints.TryGetValue(GeminiHints.ThinkingLevel, out var tl) && tl is string tlStr)
-            thinkingCfg["thinkingLevel"] = tlStr;
-        // Cross-protocol: project OpenAI's reasoning_effort onto thinkingLevel
-        // when no explicit Gemini-shape hint is present. Gemini 3 accepts
-        // "low"/"medium"/"high" verbatim; "minimal" downgrades to "low".
-        if (!thinkingCfg.ContainsKey("thinkingLevel") && !thinkingCfg.ContainsKey("thinkingBudget")
-            && request.Hints.TryGetValue(OpenAiHints.ReasoningEffort, out var re) && re is string reStr)
-        {
-            thinkingCfg["thinkingLevel"] = reStr.ToLowerInvariant() switch
-            {
-                "minimal" => "low",
-                _ => reStr
-            };
-        }
-        if (request.Hints.TryGetValue(GeminiHints.IncludeThoughts, out var inc) && inc is true)
-            thinkingCfg["includeThoughts"] = true;
+        var thinkingCfg = BuildThinkingConfig(request);
         if (thinkingCfg.Count > 0) gc["thinkingConfig"] = thinkingCfg;
 
         return gc;
+    }
+
+    /// <summary>
+    /// Builds <c>thinkingConfig</c>, emitting <b>exactly one</b> of
+    /// <c>thinkingLevel</c> / <c>thinkingBudget</c> — sending both is a 400.
+    /// Gemini 3+ takes <c>thinkingLevel</c>; Gemini 2.5 takes the legacy
+    /// <c>thinkingBudget</c>. The caller's intent is read from whichever hint is
+    /// present (native Gemini budget/level, or a cross-protocol OpenAI
+    /// <c>reasoning_effort</c>) and converted to the field the target accepts.
+    /// </summary>
+    private static Dictionary<string, object?> BuildThinkingConfig(TransitRequest request)
+    {
+        var cfg = new Dictionary<string, object?>();
+
+        int? budget = request.Hints.TryGetValue(GeminiHints.ThinkingBudget, out var tb) && tb is int tbv
+            ? tbv : null;
+        string? level = request.Hints.TryGetValue(GeminiHints.ThinkingLevel, out var tl) && tl is string tlStr
+            ? tlStr : null;
+        // Cross-protocol: OpenAI reasoning_effort expresses the same intent as a level.
+        if (level is null && budget is null
+            && request.Hints.TryGetValue(OpenAiHints.ReasoningEffort, out var re) && re is string reStr)
+            level = reStr;
+
+        if (ModelCapabilities.GeminiSupportsThinkingLevel(request.Model))
+        {
+            // Gemini 3+: thinkingLevel only. Normalise so invalid enum values
+            // (xhigh/max/none) never reach the wire; derive from a budget hint
+            // when that's all we have.
+            var norm = ReasoningEffortMapper.ToGeminiLevel(level)
+                       ?? ReasoningEffortMapper.BudgetToGeminiLevel(budget);
+            if (norm != null) cfg["thinkingLevel"] = norm;
+        }
+        else
+        {
+            // Gemini 2.5: thinkingBudget only.
+            var b = budget ?? ReasoningEffortMapper.EffortToBudget(level);
+            if (b.HasValue) cfg["thinkingBudget"] = b.Value;
+        }
+
+        if (request.Hints.TryGetValue(GeminiHints.IncludeThoughts, out var inc) && inc is true)
+            cfg["includeThoughts"] = true;
+
+        return cfg;
     }
 }
