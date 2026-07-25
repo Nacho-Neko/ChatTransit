@@ -6,8 +6,12 @@ namespace ChatTransit;
 /// Intermediate representation of an inbound AI request.
 /// Decoded from any supported wire protocol by an <see cref="Abstractions.IRequestDecoder"/>,
 /// then re-encoded into the target protocol by an <see cref="Abstractions.IRequestEncoder"/>.
+///
+/// <para>A record so a caller sitting between decode and encode can override a field
+/// the source protocol could not express — notably <see cref="Model"/>, which a Gemini
+/// payload never carries (it lives in the URL path).</para>
 /// </summary>
-public sealed class TransitRequest
+public sealed record TransitRequest
 {
     /// <summary>Conversation turns in canonical MEAI format.</summary>
     public required IList<ChatMessage> Messages { get; init; }
