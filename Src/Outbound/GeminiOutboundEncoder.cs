@@ -80,6 +80,18 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
 
     private static object BuildFunctionDeclaration(TransitFunctionToolDef t)
     {
+        // A no-arg tool (or a free-form map) has to go out with no `parameters` at all:
+        // Gemini 400s on an OBJECT schema whose properties are empty. See
+        // FunctionSchemaMapper.DeclaresNoParameters.
+        if (FunctionSchemaMapper.DeclaresNoParameters(t.ParametersSchema))
+        {
+            return new
+            {
+                name = t.Name,
+                description = t.Description
+            };
+        }
+
         // Schemas using $ref/$defs/allOf/if-then-else can't be expressed in the
         // legacy OpenAPI-subset `parameters` field — the sanitizer would drop the
         // referenced subschemas and collapse them to `{}`, losing type/enum/required.

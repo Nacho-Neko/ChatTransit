@@ -42,6 +42,21 @@ public class GeminiSchemaJsonSchemaTests
             .Should().Be("#/$defs/P");
     }
 
+    [Theory]
+    // No-arg tool as every OpenAI-shape client emits it.
+    [InlineData("""{"type":"object","properties":{}}""")]
+    [InlineData("""{"type":"object","properties":{},"required":[]}""")]
+    // Free-form map: Gemini ignores additionalProperties and 400s on the empty object.
+    [InlineData("""{"type":"object","description":"kv pairs","additionalProperties":true}""")]
+    public void Parameterless_Object_Schema_Omits_Parameters(string schema)
+    {
+        var decl = EncodeToolDecl("gemini-3-pro", schema);
+
+        decl.TryGetProperty("parameters", out _).Should().BeFalse();
+        decl.TryGetProperty("parametersJsonSchema", out _).Should().BeFalse();
+        decl.GetProperty("name").GetString().Should().Be("f");
+    }
+
     [Fact]
     public void Plain_Schema_Still_Uses_Legacy_Parameters_Field()
     {

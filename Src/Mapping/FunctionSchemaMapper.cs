@@ -58,6 +58,39 @@ public static class FunctionSchemaMapper
         => schema is { } s && s.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
            && ContainsJsonSchemaOnlyKeyword(s);
 
+    /// <summary>
+    /// True when the schema declares an object that carries no expressible parameter —
+    /// <c>{"type":"object","properties":{}}</c> (every no-arg tool: MCP handoffs,
+    /// LangGraph, plain "get current state" calls) or a free-form map declared with
+    /// <c>additionalProperties</c> and no <c>properties</c>.
+    ///
+    /// <para>Gemini rejects both with
+    /// <c>400 INVALID_ARGUMENT "…parameters.properties: should be non-empty for OBJECT
+    /// type"</c>, and <c>additionalProperties</c> does not rescue the second shape — the
+    /// validator ignores it. The only accepted way to declare a parameterless function is
+    /// to omit <c>parameters</c> entirely, so the Gemini encoder drops the field rather
+    /// than shipping a body the upstream will refuse.</para>
+    /// </summary>
+    public static bool DeclaresNoParameters(JsonElement? schema)
+    {
+        if (schema is not { } s || s.ValueKind != JsonValueKind.Object)
+            return false;
+
+        // A reference or union may resolve to real properties elsewhere in the tree;
+        // those schemas belong on the parametersJsonSchema path, not here.
+        if (ContainsJsonSchemaOnlyKeyword(s)) return false;
+        if (s.TryGetProperty("anyOf", out _) || s.TryGetProperty("oneOf", out _)) return false;
+
+        if (s.TryGetProperty("type", out var type)
+            && type.ValueKind == JsonValueKind.String
+            && !string.Equals(type.GetString(), "object", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return !s.TryGetProperty("properties", out var props)
+               || props.ValueKind != JsonValueKind.Object
+               || !props.EnumerateObject().Any();
+    }
+
     private static bool ContainsJsonSchemaOnlyKeyword(JsonElement el)
     {
         switch (el.ValueKind)
