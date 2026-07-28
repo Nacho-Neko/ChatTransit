@@ -341,8 +341,22 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         return blocks;
     }
 
-    private static object BuildThinkingBlock(AIContent content)
+    /// <summary>
+    /// Rebuilds a thinking block, or returns <c>null</c> when it carries no
+    /// signature and therefore cannot be sent at all.
+    ///
+    /// <para>Anthropic verifies the signature cryptographically and rejects a
+    /// missing one with <c>"messages.N.content.0.thinking.signature: Field
+    /// required"</c>. A fabricated sentinel does not pass that check, so an
+    /// unsignable thought has exactly one valid encoding: none. Cross-protocol
+    /// callers produce these routinely — an OpenAI client replaying a reasoning
+    /// summary, or history whose signature was dropped somewhere upstream — and
+    /// the surrounding text / tool blocks still carry the conversation.</para>
+    /// </summary>
+    private static object? BuildThinkingBlock(AIContent content)
     {
+        // redacted_thinking is a different shape: its opaque `data` IS the sealed
+        // payload, and the API neither expects nor accepts a `signature` on it.
         if (ThinkingMapper.IsRedactedThinking(content))
         {
             var data = ThinkingMapper.GetAnthropicRedactedData(content) ?? "";
@@ -353,20 +367,21 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
             };
         }
 
-        var text = ThinkingMapper.GetThinkingText(content) ?? "";
-        // Recover the signature. Since the target backend is Anthropic, prefer the
-        // Anthropic-native signature; only fall back to any other protocol carrier
-        // (Gemini/OpenAI) when it is absent. Anthropic requires it as `signature`
-        // or it 400s with "messages.N.content.0.thinking.signature: Field required".
+        // Since the target backend is Anthropic, prefer the Anthropic-native
+        // signature; only fall back to another protocol's carrier (Gemini/OpenAI)
+        // when it is absent — the blob is model-bound, not protocol-bound.
         var sig = ThinkingMapper.GetAnthropicSignature(content)
                   ?? ThinkingMapper.GetAnySignature(content);
+        if (string.IsNullOrEmpty(sig))
+            return null;
+
         var block = new Dictionary<string, object?>
         {
             ["type"] = "thinking",
-            ["thinking"] = text
+            ["thinking"] = ThinkingMapper.GetThinkingText(content) ?? "",
+            // Anthropic requires the original signature byte-for-byte on round-trip
+            ["signature"] = sig
         };
-        // Anthropic requires the original signature byte-for-byte on round-trip
-        if (!string.IsNullOrEmpty(sig)) block["signature"] = sig;
         AttachCacheControl(block, content);
         return block;
     }

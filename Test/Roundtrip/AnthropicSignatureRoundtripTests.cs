@@ -53,6 +53,78 @@ public class AnthropicSignatureRoundtripTests
         thinkingBlock.GetProperty("signature").GetString().Should().Be(sig);
     }
 
+    /// <summary>
+    /// The mirror image of the round-trip above. A thinking block that arrives
+    /// without a signature has no valid outbound form: Anthropic verifies the blob
+    /// cryptographically and rejects a missing one with
+    /// <c>"messages.N.content.0.thinking.signature: Field required"</c>, and no
+    /// fabricated sentinel passes that check. Cross-protocol callers produce this
+    /// shape routinely — an OpenAI client replaying a reasoning summary has nothing
+    /// to put in the field — so the block is dropped and its neighbours carry on.
+    /// </summary>
+    [Fact]
+    public void Unsigned_Thinking_Block_IsDropped_RatherThanSentWithoutOne()
+    {
+        var json = """
+        {
+          "model": "claude-opus-4-7",
+          "max_tokens": 8192,
+          "messages": [
+            {
+              "role": "assistant",
+              "content": [
+                {"type": "thinking", "thinking": "Reasoning that lost its signature."},
+                {"type": "text", "text": "The answer is 42."}
+              ]
+            },
+            {"role": "user", "content": "Why?"}
+          ]
+        }
+        """;
+        var transit = new AnthropicInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new AnthropicOutboundEncoder().Encode(transit);
+
+        using var doc = JsonDocument.Parse(encoded);
+        var assistantContent = doc.RootElement.GetProperty("messages")[0].GetProperty("content");
+
+        // Only the text block survives, and a lone plain text block collapses to
+        // the string shorthand — so the absence of an array IS the assertion.
+        assistantContent.ValueKind.Should().Be(JsonValueKind.String);
+        assistantContent.GetString().Should().Be("The answer is 42.");
+    }
+
+    /// <summary>
+    /// Dropping the whole turn instead would change the shape of the conversation,
+    /// and Anthropic validates shape (roles alternate, the newest models reject a
+    /// trailing assistant turn). The role slot is kept with the same placeholder
+    /// any other content-less turn gets.
+    /// </summary>
+    [Fact]
+    public void Turn_EmptiedByAnUnsignedThought_KeepsItsRoleSlot()
+    {
+        var json = """
+        {
+          "model": "claude-opus-4-7",
+          "max_tokens": 8192,
+          "messages": [
+            {"role": "user", "content": "Go."},
+            {"role": "assistant", "content": [
+              {"type": "thinking", "thinking": "Unsigned, and the only block here."}
+            ]},
+            {"role": "user", "content": "Why?"}
+          ]
+        }
+        """;
+        var transit = new AnthropicInboundDecoder().Decode(Encoding.UTF8.GetBytes(json));
+        var encoded = new AnthropicOutboundEncoder().Encode(transit);
+
+        using var doc = JsonDocument.Parse(encoded);
+        var messages = doc.RootElement.GetProperty("messages");
+        messages.GetArrayLength().Should().Be(3);
+        messages[1].GetProperty("role").GetString().Should().Be("assistant");
+        messages[1].GetProperty("content").GetString().Should().Be(".");
+    }
+
     [Fact]
     public void RedactedThinking_Data_SurvivesRoundTrip()
     {
