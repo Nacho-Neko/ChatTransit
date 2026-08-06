@@ -363,12 +363,11 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
             // built-in retrievers (`googleSearch`, `urlContext`, etc.) ? split them
             // so cross-protocol routes only see real functions, while same-protocol
             // round-trip can replay the built-ins verbatim.
-            var hasFunctions = toolset.TryGetProperty("functionDeclarations", out var decls)
-                && decls.ValueKind == JsonValueKind.Array;
+            var hasFunctions = TryGetFunctionDeclarations(toolset, out var decls);
             var builtinFields = new List<JsonProperty>();
             foreach (var prop in toolset.EnumerateObject())
             {
-                if (prop.Name == "functionDeclarations") continue;
+                if (IsFunctionDeclarationsKey(prop.Name)) continue;
                 builtinFields.Add(prop);
             }
 
@@ -379,7 +378,7 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
                     var name = decl.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
                     if (string.IsNullOrEmpty(name)) continue;
                     var desc = decl.TryGetProperty("description", out var d) ? d.GetString() : null;
-                    var schema = decl.TryGetProperty("parameters", out var p) ? (JsonElement?)p.Clone() : null;
+                    var schema = DecodeDeclarationSchema(decl);
                     toolList.Add(new TransitFunctionToolDef { Name = name, Description = desc, ParametersSchema = schema });
                 }
             }
@@ -400,6 +399,48 @@ public sealed class GeminiInboundDecoder : IRequestDecoder
 
         return toolList;
     }
+
+    /// <summary>
+    /// Google accepts either casing on ingest — proto3 JSON names the field
+    /// <c>function_declarations</c> and every published example camel-cases it — so a
+    /// pass keyed on one spelling silently treats the other as a built-in retriever.
+    /// </summary>
+    private static bool IsFunctionDeclarationsKey(string name)
+        => name is "functionDeclarations" or "function_declarations";
+
+    private static bool TryGetFunctionDeclarations(JsonElement toolset, out JsonElement declarations)
+    {
+        if (toolset.TryGetProperty("functionDeclarations", out declarations)
+            && declarations.ValueKind == JsonValueKind.Array)
+            return true;
+
+        if (toolset.TryGetProperty("function_declarations", out declarations)
+            && declarations.ValueKind == JsonValueKind.Array)
+            return true;
+
+        declarations = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Reads a declaration's argument schema out of whichever of Gemini's two mutually
+    /// exclusive fields the caller used.
+    ///
+    /// <para><c>parametersJsonSchema</c> already IS standard JSON Schema, so it is
+    /// authoritative and travels verbatim. The <c>Schema</c>-typed <c>parameters</c> is
+    /// the OpenAPI-3.0 subset in proto3 JSON and has to be converted
+    /// (<see cref="FunctionSchemaMapper.FromGemini"/>) before an Anthropic
+    /// <c>input_schema</c> or OpenAI <c>parameters</c> slot can read it.</para>
+    ///
+    /// <para>Reading only the legacy field — as this decoder used to — dropped the whole
+    /// schema for every caller on the newer one, which is what gemini-cli, anything that
+    /// ran through a <c>parametersJsonSchema</c> promotion pass, and our own Gemini
+    /// encoder all emit.</para>
+    /// </summary>
+    private static JsonElement? DecodeDeclarationSchema(JsonElement decl)
+        => FunctionSchemaMapper.ReadSchema(decl, "parametersJsonSchema")
+           ?? FunctionSchemaMapper.ReadSchema(decl, "parameters_json_schema")
+           ?? FunctionSchemaMapper.FromGemini(FunctionSchemaMapper.ReadSchema(decl, "parameters"));
 
     private static void BuildHints(JsonElement root, Dictionary<string, object?> hints)
     {

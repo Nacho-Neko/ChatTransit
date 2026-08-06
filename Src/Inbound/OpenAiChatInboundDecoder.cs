@@ -368,7 +368,7 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
             var name = fn.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
             if (string.IsNullOrEmpty(name)) continue;
             var desc = fn.TryGetProperty("description", out var d) ? d.GetString() : null;
-            var schema = fn.TryGetProperty("parameters", out var p) ? (JsonElement?)p.Clone() : null;
+            var schema = FunctionSchemaMapper.ReadSchema(fn, "parameters");
             toolList.Add(new TransitFunctionToolDef { Name = name, Description = desc, ParametersSchema = schema });
         }
         return toolList.Count > 0 ? toolList : null;

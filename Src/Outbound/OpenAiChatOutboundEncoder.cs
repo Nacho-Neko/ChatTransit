@@ -54,16 +54,20 @@ public sealed class OpenAiChatOutboundEncoder : IRequestEncoder
         // Tools
         if (request.FunctionTools is { Count: > 0 })
         {
-            body["tools"] = request.FunctionTools.Select(t => (object)new
+            body["tools"] = request.FunctionTools.Select(t =>
             {
-                type = "function",
-                function = new
+                var function = new Dictionary<string, object?>
                 {
-                    name = t.Name,
-                    description = t.Description,
-                    parameters = t.ParametersSchema ?? JsonSerializer.SerializeToElement(
-                        new { type = "object", properties = new { } })
-                }
+                    ["name"] = t.Name,
+                    ["description"] = t.Description
+                };
+                // Chat Completions types `parameters` as optional and defines the empty
+                // case by absence — "Omitting `parameters` defines a function with an
+                // empty parameter list" — so a tool that declared none leaves the field
+                // out. (The Responses API differs: there it is required-but-nullable.)
+                if (t.ParametersSchema is { } schema)
+                    function["parameters"] = schema;
+                return (object)new { type = "function", function };
             }).ToList();
         }
 

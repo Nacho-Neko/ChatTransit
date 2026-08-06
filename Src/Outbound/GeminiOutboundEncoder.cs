@@ -80,10 +80,10 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
 
     private static object BuildFunctionDeclaration(TransitFunctionToolDef t)
     {
-        // A no-arg tool (or a free-form map) has to go out with no `parameters` at all:
-        // Gemini 400s on an OBJECT schema whose properties are empty. See
-        // FunctionSchemaMapper.DeclaresNoParameters.
-        if (FunctionSchemaMapper.DeclaresNoParameters(t.ParametersSchema))
+        // Both parameter fields are optional and Google documents the empty case on the
+        // legacy one: "For function with no parameters, this can be left unset." A caller
+        // that declared nothing therefore goes out declaring nothing.
+        if (t.ParametersSchema is null)
         {
             return new
             {
@@ -92,11 +92,13 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
             };
         }
 
-        // Schemas using $ref/$defs/allOf/if-then-else can't be expressed in the
-        // legacy OpenAPI-subset `parameters` field — the sanitizer would drop the
-        // referenced subschemas and collapse them to `{}`, losing type/enum/required.
-        // Route those through `parametersJsonSchema`, which accepts full JSON Schema.
-        if (FunctionSchemaMapper.RequiresJsonSchema(t.ParametersSchema))
+        // Otherwise the caller DID declare a schema, and the only question is which of
+        // the two mutually exclusive fields can carry it. `parameters` is typed `Schema`
+        // (the OpenAPI-3.0 subset) and cannot: it has no place for $ref/$defs/allOf, and
+        // its validator refuses an OBJECT whose `properties` is empty. Every one of those
+        // is ordinary JSON Schema, which is what `parametersJsonSchema` reads — so the
+        // schema is migrated to that field verbatim rather than filtered or dropped.
+        if (FunctionSchemaMapper.ExceedsGeminiSchemaSubset(t.ParametersSchema))
         {
             return new
             {

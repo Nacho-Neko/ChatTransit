@@ -69,13 +69,16 @@ public sealed class OpenAiResponsesOutboundEncoder : IRequestEncoder
         {
             foreach (var t in request.FunctionTools)
             {
+                // The Responses API declares `parameters` as required but nullable
+                // (`unknown | null`), unlike Chat Completions where it is optional and
+                // absence means "no arguments". So the field always goes out, and a tool
+                // that declared no arguments sends the explicit null the spec allows.
                 toolItems.Add(new
                 {
                     type = "function",
                     name = t.Name,
                     description = t.Description,
-                    parameters = t.ParametersSchema ?? JsonSerializer.SerializeToElement(
-                        new { type = "object", properties = new { } })
+                    parameters = t.ParametersSchema
                 });
             }
         }

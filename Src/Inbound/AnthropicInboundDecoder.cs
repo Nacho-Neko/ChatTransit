@@ -396,7 +396,7 @@ public sealed class AnthropicInboundDecoder : IRequestDecoder
             var name = tool.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
             if (string.IsNullOrEmpty(name)) continue;
             var desc = tool.TryGetProperty("description", out var d) ? d.GetString() : null;
-            var schema = tool.TryGetProperty("input_schema", out var p) ? (JsonElement?)p.Clone() : null;
+            var schema = FunctionSchemaMapper.ReadSchema(tool, "input_schema");
             toolList.Add(new TransitFunctionToolDef { Name = name, Description = desc, ParametersSchema = schema });
         }
         return toolList.Count > 0 ? toolList : null;

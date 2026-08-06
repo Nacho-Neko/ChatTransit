@@ -16,6 +16,14 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
 {
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
+    /// <summary>
+    /// The minimal legal <c>input_schema</c>: the API validates its root as the constant
+    /// <c>"object"</c> and leaves <c>properties</c> / <c>required</c> optional, so nothing
+    /// beyond the root has to be invented to say "this tool takes no arguments".
+    /// </summary>
+    private static readonly JsonElement ArgumentlessInputSchema =
+        JsonSerializer.SerializeToElement(new { type = "object" }, JsonOpts);
+
     public ChatTransitProtocol Protocol => ChatTransitProtocol.Anthropic;
 
     public byte[] Encode(TransitRequest request)
@@ -92,14 +100,17 @@ public sealed class AnthropicOutboundEncoder : IRequestEncoder
         }
 
         // ── Tools ─────────────────────────────────────────────────────────────
+        // `input_schema` is required alongside `name`, so — unlike the two protocols that
+        // let the field be left out — a tool that declared no arguments still has to ship
+        // one. Omitting it is what draws
+        // `tools.N.custom.input_schema: Field required`.
         if (request.FunctionTools is { Count: > 0 })
         {
             body["tools"] = request.FunctionTools.Select(t => (object)new
             {
                 name = t.Name,
                 description = t.Description,
-                input_schema = t.ParametersSchema ?? JsonSerializer.SerializeToElement(
-                    new { type = "object", properties = new { } })
+                input_schema = t.ParametersSchema ?? ArgumentlessInputSchema
             }).ToList();
         }
 
