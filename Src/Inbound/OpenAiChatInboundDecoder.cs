@@ -151,6 +151,7 @@ public sealed class OpenAiChatInboundDecoder : IRequestDecoder
                         fcc.AdditionalProperties ??= new AdditionalPropertiesDictionary();
                         fcc.AdditionalProperties["transit.openai.raw_arguments"] = fnArgs;
                     }
+                    ThinkingMapper.ReadOpenAiToolCallSignature(fcc, tc);
                     contents.Add(fcc);
                 }
             }

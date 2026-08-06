@@ -68,16 +68,18 @@ public static class OpenAiChatSseEncoder
                         if (chunk.FunctionName != null)
                         {
                             toolCallIndex++;
-                            var tc = new[]
+                            var entry = new Dictionary<string, object?>(StringComparer.Ordinal)
                             {
-                                new
-                                {
-                                    index = toolCallIndex,
-                                    id = chunk.FunctionCallId ?? $"call_{Guid.NewGuid():N}",
-                                    type = "function",
-                                    function = new { name = chunk.FunctionName, arguments = chunk.FunctionArguments ?? "" }
-                                }
+                                ["index"] = toolCallIndex,
+                                ["id"] = chunk.FunctionCallId ?? $"call_{Guid.NewGuid():N}",
+                                ["type"] = "function",
+                                ["function"] = new { name = chunk.FunctionName, arguments = chunk.FunctionArguments ?? "" },
                             };
+                            // Google puts the signature on the opening tool_call delta in
+                            // its own OpenAI-compat endpoint; match that so clients already
+                            // handling Gemini 3 need no special case for us.
+                            ThinkingMapper.WriteOpenAiToolCallSignature(entry, chunk.ReasoningSignature);
+                            var tc = new[] { entry };
                             yield return FormatChunk(completionId, created, model, fingerprint,
                                 BuildDelta(firstDelta, toolCalls: tc),
                                 finishReason: null);
@@ -183,6 +185,7 @@ public static class OpenAiChatSseEncoder
         var toolCalls = new List<object>();
         string? currentToolId = null;
         string? currentToolName = null;
+        string? currentToolSignature = null;
         var currentToolArgs = new System.Text.StringBuilder();
         long promptTokens = 0, completionTokens = 0, cachedTokens = 0, reasoningTokens = 0;
         string? upstreamFinishReason = null;
@@ -208,9 +211,11 @@ public static class OpenAiChatSseEncoder
                 case StreamingContentType.FunctionCall:
                     if (chunk.FunctionName != null)
                     {
-                        FlushTool(toolCalls, ref currentToolId, currentToolName, currentToolArgs);
+                        FlushTool(toolCalls, ref currentToolId, currentToolName, currentToolArgs,
+                            ref currentToolSignature);
                         currentToolId = chunk.FunctionCallId ?? $"call_{Guid.NewGuid():N}";
                         currentToolName = chunk.FunctionName;
+                        currentToolSignature = chunk.ReasoningSignature;
                     }
                     if (chunk.FunctionArguments != null)
                         currentToolArgs.Append(chunk.FunctionArguments);
@@ -222,7 +227,8 @@ public static class OpenAiChatSseEncoder
             }
         }
 
-        FlushTool(toolCalls, ref currentToolId, currentToolName, currentToolArgs);
+        FlushTool(toolCalls, ref currentToolId, currentToolName, currentToolArgs,
+            ref currentToolSignature);
 
         var finishReason = StopReasonMapper.DeriveOpenAiFinishReason(upstreamFinishReason, toolCalls.Count > 0);
         var reasoning = reasoningBuffer.Length > 0 ? reasoningBuffer.ToString() : (string?)null;
@@ -309,16 +315,19 @@ public static class OpenAiChatSseEncoder
     }
 
     private static void FlushTool(List<object> toolCalls, ref string? currentToolId,
-        string? currentToolName, System.Text.StringBuilder args)
+        string? currentToolName, System.Text.StringBuilder args, ref string? signature)
     {
         if (currentToolId == null) return;
-        toolCalls.Add(new
+        var tc = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            id = currentToolId,
-            type = "function",
-            function = new { name = currentToolName, arguments = args.ToString() }
-        });
+            ["id"] = currentToolId,
+            ["type"] = "function",
+            ["function"] = new { name = currentToolName, arguments = args.ToString() },
+        };
+        ThinkingMapper.WriteOpenAiToolCallSignature(tc, signature);
+        toolCalls.Add(tc);
         currentToolId = null;
+        signature = null;
         args.Clear();
     }
 

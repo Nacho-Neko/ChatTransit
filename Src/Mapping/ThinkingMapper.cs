@@ -1,4 +1,5 @@
 ﻿using Microsoft.Extensions.AI;
+using System.Text.Json;
 
 namespace ChatTransit.Mapping;
 
@@ -48,6 +49,75 @@ public static class ThinkingMapper
 
     /// <summary>OpenAI Responses reasoning summary parts (array preserved as-is).</summary>
     public const string OpenAiReasoningSummary = "transit.thinking.openai.summary";
+
+    // ── Gemini thought signatures on the OpenAI compatibility surface ─────────
+    //
+    // Gemini 3 signs the functionCall part and rejects the next turn unless the
+    // signature comes back on that same part. Chat Completions has no field of its
+    // own for it, so Google defines a carrier on the tool call:
+    //
+    //   tool_calls[].extra_content.google.thought_signature
+    //
+    // documented under "Signatures for OpenAI compatibility" at
+    // https://ai.google.dev/gemini-api/docs/thought-signatures. Google's own
+    // OpenAI-compat endpoint both returns it there and validates it there on replay,
+    // so speaking the same shape means clients already patched for Gemini (and the
+    // SDKs that preserve unknown tool-call fields) work against us unchanged.
+    //
+    // Google documents this shape for Chat Completions only — there is no equivalent
+    // for the Responses API or for Anthropic Messages. Those keep no carrier at all
+    // and fall back to the sentinel Google prescribes for histories that have no
+    // signatures (see GeminiThoughtSignaturePolicy). Inventing a field there would be
+    // a shape no client knows how to produce.
+
+    /// <summary>Google's namespace object on an OpenAI-compat <c>tool_calls[]</c> entry.</summary>
+    public const string OpenAiExtraContentKey = "extra_content";
+
+    /// <summary>Vendor key inside <see cref="OpenAiExtraContentKey"/>.</summary>
+    public const string OpenAiExtraContentVendorKey = "google";
+
+    /// <summary>Signature field inside <see cref="OpenAiExtraContentVendorKey"/>.</summary>
+    public const string OpenAiThoughtSignatureKey = "thought_signature";
+
+    /// <summary>
+    /// Attaches <c>extra_content.google.thought_signature</c> to an OpenAI-compat
+    /// <c>tool_calls[]</c> entry under construction, in the shape Google documents.
+    /// A no-op without a signature, so the key stays off the wire for every backend
+    /// that does not sign tool calls.
+    /// </summary>
+    public static void WriteOpenAiToolCallSignature(
+        IDictionary<string, object?> wireToolCall, string? signature)
+    {
+        if (string.IsNullOrEmpty(signature)) return;
+
+        wireToolCall[OpenAiExtraContentKey] = new Dictionary<string, object?>
+        {
+            [OpenAiExtraContentVendorKey] = new Dictionary<string, object?>
+            {
+                [OpenAiThoughtSignatureKey] = signature,
+            },
+        };
+    }
+
+    /// <summary>
+    /// Reads <c>extra_content.google.thought_signature</c> back off an OpenAI-compat
+    /// <c>tool_calls[]</c> entry and pins it to the call, from where
+    /// <c>GeminiOutboundEncoder</c> restores it to the native <c>functionCall</c> part.
+    /// </summary>
+    public static void ReadOpenAiToolCallSignature(AIContent content, JsonElement toolCall)
+    {
+        if (toolCall.ValueKind == JsonValueKind.Object
+            && toolCall.TryGetProperty(OpenAiExtraContentKey, out var extra)
+            && extra.ValueKind == JsonValueKind.Object
+            && extra.TryGetProperty(OpenAiExtraContentVendorKey, out var google)
+            && google.ValueKind == JsonValueKind.Object
+            && google.TryGetProperty(OpenAiThoughtSignatureKey, out var sig)
+            && sig.ValueKind == JsonValueKind.String
+            && sig.GetString() is { Length: > 0 } value)
+        {
+            SetGeminiThoughtSignature(content, value);
+        }
+    }
 
     // ── Kind enum (stored as string in AdditionalProperties) ──────────────────
 

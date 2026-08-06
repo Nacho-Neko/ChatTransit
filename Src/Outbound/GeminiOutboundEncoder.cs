@@ -216,7 +216,7 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
                     break;
 
                 case TextContent tc when !string.IsNullOrEmpty(tc.Text):
-                    parts.Add(new { text = tc.Text });
+                    parts.Add(BuildTextPart(tc));
                     break;
 
                 case DataContent dc:
@@ -276,6 +276,25 @@ public sealed class GeminiOutboundEncoder : IRequestEncoder
         };
         if (!string.IsNullOrEmpty(sig)) part["thoughtSignature"] = sig;
         return part;
+    }
+
+    private static object BuildTextPart(TextContent tc)
+    {
+        // Gemini 3 can sign an ordinary text part (typically the last one of a
+        // response). GeminiInboundDecoder keeps that signature on the content;
+        // echo it back on the same part. Only the Gemini-native carrier counts —
+        // an Anthropic/OpenAI blob recovered via GetAnySignature would be a
+        // foreign value in a field Gemini interprets, so it is deliberately not
+        // used here (unlike thought parts, where the blob is the same tunnel).
+        var sig = ThinkingMapper.GetGeminiThoughtSignature(tc);
+        if (string.IsNullOrEmpty(sig))
+            return new { text = tc.Text };
+
+        return new Dictionary<string, object?>
+        {
+            ["text"] = tc.Text,
+            ["thoughtSignature"] = sig,
+        };
     }
 
     private static object BuildFunctionCallPart(FunctionCallContent fcc)
