@@ -136,24 +136,12 @@ public static class AnthropicSseDecoder
             }
 
             case "error":
-            {
-                // Upstream SSE error events must not be swallowed (returning null
-                // would fake a clean end of stream). Surface as a Usage chunk
-                // carrying the provider error message/type.
-                string? errMessage = null, errType = null;
-                if (root.TryGetProperty("error", out var errEl)
-                    && errEl.ValueKind == JsonValueKind.Object)
-                {
-                    errMessage = UsageDictBuilder.GetString(errEl, "message");
-                    errType = UsageDictBuilder.GetString(errEl, "type");
-                }
+                // Preserve the upstream data payload verbatim for re-emission.
                 return new StreamingChunkDto
                 {
                     ContentType = StreamingContentType.Usage,
-                    Error = errMessage,
-                    ErrorCode = errType,
+                    Error = json,
                 };
-            }
 
             case "content_block_start":
             {
